@@ -1,0 +1,172 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>AidFleet - Compliance</title>
+  <link rel="stylesheet" href="../css/style.css">
+  
+<link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:opsz,wght,FILL,GRAD@20..48,100..700,0..1,-50..200" rel="stylesheet" />
+</head>
+<body>
+  <div class="app-layout" id="app"></div>
+  <script>
+    // Initialize routing base
+    window.APP_ROOT = "../";
+  </script>
+  <script src="../js/data.js"></script>
+  <script>
+    (async () => {
+      const user = await requireAuth(['driver']);
+      if (!user) return;
+
+      let driver = null;
+
+      async function refresh() {
+        const prof = await apiFetch(window.APP_ROOT + 'api/driver/profile.php');
+        driver = prof && prof.driver ? prof.driver : null;
+      }
+
+      function render() {
+        if (!driver) {
+          document.getElementById('app').innerHTML =
+            renderSidebar('driver', 'reupload.html') +
+            '<div class="main-area">' + renderTopbar([]) +
+            '<div class="content"><div style="display:flex;align-items:center;justify-content:center;min-height:60vh;">' +
+              '<p class="text-muted">Driver profile not found. Please contact admin.</p></div></div></div>';
+          return;
+        }
+
+        const isVerified = driver.verification_status === 'approved';
+        const isRevoked = driver.verification_status === 'rejected' &&
+          typeof driver.verification_note === 'string' &&
+          driver.verification_note.toLowerCase().includes('temporarily disabled');
+
+        let content = '';
+        if (isVerified || isRevoked) {
+          // For temporarily disabled accounts, keep this section read-only (no re-upload),
+      
+          if (isRevoked) {
+            const note = driver.verification_note || '';
+            const reason = note.replace(/^temporarily disabled:\s*/i, '').replace(/^rejected:\s*/i, '') || 'Unspecified';
+            content =
+              '<div class="card card-padded text-center">' +
+                '<div style="margin-bottom:16px;"><span class="material-symbols-outlined" style="font-size:48px;color:var(--destructive);">block</span></div>' +
+                '<h3 class="font-bold mb-2">Account Temporarily Disabled</h3>' +
+                '<p class="text-muted">Your account has been temporarily disabled by the administrator.</p>' +
+                '<p class="text-sm text-muted mt-2"><strong>Reason:</strong> ' + escapeHtml(reason) + '</p>' +
+                '<p class="text-sm text-muted mt-2">Please contact the administrator for more information.</p>' +
+              '</div>';
+          } else {
+            content =
+              '<div class="card card-padded text-center">' +
+                '<div class="nav-empty-state" style="margin-bottom:16px;"><span class="material-symbols-outlined nav-empty-success">check_circle</span></div>' +
+                '<h3 class="font-bold mb-2">Documents Verified</h3>' +
+                '<p class="text-muted">Your documents have been verified and approved. Compliance uploads are disabled.</p>' +
+                '<p class="text-sm text-muted mt-2">If you need to update your documents, please contact the administrator.</p>' +
+              '</div>';
+          }
+        } else {
+          const currentLicense = driver.documents_path
+            ? '<p class="text-sm text-muted mt-1"><strong>Current:</strong> <a href="' + escapeAttr(safeAssetUrl(driver.documents_path)) + '" target="_blank" rel="noopener" style="color:var(--info);text-decoration:underline;">View Driving License</a></p>'
+            : '<p class="text-sm text-muted mt-1"><strong>Current:</strong> Not uploaded</p>';
+          const currentMedical = driver.medical_doc_path
+            ? '<p class="text-sm text-muted mt-1"><strong>Current:</strong> <a href="' + escapeAttr(safeAssetUrl(driver.medical_doc_path)) + '" target="_blank" rel="noopener" style="color:var(--info);text-decoration:underline;">View Medical Document</a></p>'
+            : '<p class="text-sm text-muted mt-1"><strong>Current:</strong> Not uploaded</p>';
+
+          const note = driver.verification_note || '';
+          const rejectReason = note.replace(/^rejected:\s*/i, '') || 'Unspecified';
+          const statusMsg = driver.verification_status === 'rejected'
+            ? '<div class="alert-error mb-4"><span class="material-symbols-outlined inline-icon">warning</span> Your registration request was rejected. Reason: ' + escapeHtml(rejectReason) + '. Please contact the administrator for further details.</div>'
+            : '<div class="alert-warning mb-4"><span class="material-symbols-outlined inline-icon">warning</span> Your documents are pending verification. You can submit updated documents via Compliance if needed.</div>';
+
+          content =
+            '<div class="card card-padded">' +
+              '<h3 class="font-bold mb-4">Upload Verification Documents</h3>' +
+              statusMsg +
+              '<form id="reuploadForm" enctype="multipart/form-data">' +
+                '<div class="form-group">' +
+                  '<label>Upload Medical Certification (PDF/JPG/PNG, Max 20MB)</label>' +
+                  '<div style="display:flex; align-items:center; gap:8px;">' +
+                    '<input type="file" id="medicalDocument" class="form-input" style="flex:1;" accept=".pdf,.jpg,.jpeg,.png">' +
+                    '<button type="button" onclick="document.getElementById(\'medicalDocument\').value=\'\'" style="background:none; border:none; cursor:pointer; color:var(--destructive); padding:8px;" title="Clear selection">' +
+                      '<span class="material-symbols-outlined">delete</span>' +
+                    '</button>' +
+                  '</div>' +
+                  currentMedical +
+                  '<p class="text-xs text-muted mt-1">Proof of medical fitness or EMT certification.</p>' +
+                '</div>' +
+                '<div class="form-group">' +
+                  '<label>Upload Driving License (PDF/JPG/PNG, Max 20MB)</label>' +
+                  '<div style="display:flex; align-items:center; gap:8px;">' +
+                    '<input type="file" id="licenseDocument" class="form-input" style="flex:1;" accept=".pdf,.jpg,.jpeg,.png">' +
+                    '<button type="button" onclick="document.getElementById(\'licenseDocument\').value=\'\'" style="background:none; border:none; cursor:pointer; color:var(--destructive); padding:8px;" title="Clear selection">' +
+                      '<span class="material-symbols-outlined">delete</span>' +
+                    '</button>' +
+                  '</div>' +
+                  currentLicense +
+                  '<p class="text-xs text-muted mt-1">Scanned copy of your valid driving license.</p>' +
+                '</div>' +
+                '<div class="form-group">' +
+                  '<button type="submit" class="btn btn-emergency btn-full">Upload Documents</button>' +
+                '</div>' +
+              '</form>' +
+              '<div id="errorMsg" class="alert-error mt-3" style="display:none;"></div>' +
+              '<div id="successMsg" class="alert-success mt-3" style="display:none;"></div>' +
+            '</div>';
+        }
+
+        document.getElementById('app').innerHTML =
+          renderSidebar('driver', 'reupload.html') +
+          '<div class="main-area">' + renderTopbar([]) +
+          '<div class="content"><div class="space-y-6">' +
+            '<div><h1 class="page-title">Compliance</h1><p class="page-subtitle">Update your verification documents</p></div>' +
+            content +
+          '</div></div></div>';
+if (!isVerified && !isRevoked) {
+          document.getElementById('reuploadForm').addEventListener('submit', async function(e) {
+            e.preventDefault();
+            const medicalFile = document.getElementById('medicalDocument').files[0];
+            const licenseFile = document.getElementById('licenseDocument').files[0];
+            const errEl = document.getElementById('errorMsg');
+            const successEl = document.getElementById('successMsg');
+
+            if (!medicalFile && !licenseFile) {
+              errEl.textContent = 'Please select at least one document to upload';
+              errEl.style.display = 'block';
+              successEl.style.display = 'none';
+              return;
+            }
+
+            errEl.style.display = 'none';
+            successEl.style.display = 'none';
+
+            const fd = new FormData();
+            if (medicalFile) fd.append('medical_document', medicalFile);
+            if (licenseFile) fd.append('license_document', licenseFile);
+
+            const res = await apiFetch(window.APP_ROOT + 'api/driver/reupload_documents.php', {
+              method: 'POST',
+              body: fd,
+            });
+
+            if (res.success) {
+              successEl.textContent = res.message || 'Documents uploaded successfully. Your account is pending verification again.';
+              successEl.style.display = 'block';
+              document.getElementById('reuploadForm').reset();
+              await refresh();
+              render();
+            } else {
+              errEl.textContent = res.message || 'Upload failed';
+              errEl.style.display = 'block';
+            }
+          });
+        }
+      }
+
+      await refresh();
+      render();
+    })();
+  </script>
+</body>
+</html>

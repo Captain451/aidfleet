@@ -1,0 +1,13 @@
+# Block directory listings sitewide
+Options -Indexes
+
+# Protect sensitive config files from direct access
+<FilesMatch "^(\.env|\.env\..*|composer\.(json|lock))$">
+  Require all denied
+</FilesMatch>
+
+# Block direct access to backend-only folders
+<IfModule mod_rewrite.c>
+  RewriteEngine On
+  RewriteRule ^(src|config|database|scripts|storage|vendor)(/|$) - [F,L]
+</IfModule>

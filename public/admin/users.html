@@ -1,0 +1,130 @@
+﻿<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>AidFleet - Users</title>
+  <link rel="stylesheet" href="../css/style.css">
+  
+<link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:opsz,wght,FILL,GRAD@20..48,100..700,0..1,-50..200" rel="stylesheet" />
+</head>
+<body>
+  <div class="app-layout" id="app"></div>
+  <script>
+    // Initialize routing base
+    window.APP_ROOT = "../";
+  </script>
+  <script src="../js/data.js"></script>
+  <script>
+    (async () => {
+      const user = await requireAuth(['admin']);
+      if (!user) return;
+
+      async function loadUsers() {
+        const r = await apiFetch(window.APP_ROOT + 'api/admin/users.php');
+        if (!r || !r.success) return [];
+        return r.users || [];
+      }
+
+      const users = await loadUsers();
+
+      let rows = '';
+      users.forEach(u => {
+        const userId = Number(u.user_id) || 0;
+        const isInactive = u.account_status === 'disabled';
+        const actionBtn = isInactive
+          ? '<button class="text-xs text-success" style="background:none;border:none;cursor:pointer;text-decoration:underline;color:var(--success);" onclick="reactivateUser(this, ' + userId + ')">Reactivate</button>'
+          : '<button class="text-xs text-destructive" style="background:none;border:none;cursor:pointer;text-decoration:underline;color:var(--destructive);" onclick="disableUser(' + userId + ')">Temporarily Disable</button>';
+        
+        rows += '<tr>' +
+          '<td><p class="text-sm font-medium">' + escapeHtml(u.full_name) + '</p><p class="text-xs text-muted">' + escapeHtml(u.email) + '</p></td>' +
+          '<td class="text-sm text-muted">' + escapeHtml(u.phone || '') + '</td>' +
+          '<td class="text-sm text-muted">' + (u.total_requests || 0) + '</td>' +
+          '<td class="text-sm text-muted">' + (isInactive ? '<span style="color:var(--destructive)">Disabled</span>' : '<span style="color:var(--success)">Active</span>') + '</td>' +
+          '<td class="text-sm text-muted">' + actionBtn + '</td>' +
+        '</tr>';
+      });
+
+      document.getElementById('app').innerHTML =
+        renderSidebar('admin', 'users.html') +
+        '<div class="main-area">' + renderTopbar([]) +
+        '<div class="content"><div class="space-y-6">' +
+          '<div><h1 class="page-title">Registered Requesters</h1><p class="page-subtitle">Overview of all emergency requesters in the system</p></div>' +
+          '<div id="adminError" class="alert-error" style="display:none;"></div>' +
+          '<div class="card"><div class="card-header"><h3>All Users (' + users.length + ')</h3></div>' +
+            '<div style="overflow-x:auto;"><table><thead><tr><th>Requester</th><th>Phone</th><th>Total Requests</th><th>Status</th><th>Action</th></tr></thead>' +
+            '<tbody>' + (rows || '<tr><td colspan="5" class="text-center text-muted" style="padding:16px;">No users found.</td></tr>') + '</tbody></table></div>' +
+          '</div>' +
+        '</div></div></div>';
+window.disableUser = function(id) {
+          const existing = document.getElementById('adminReasonDialog');
+          if (existing) existing.remove();
+          
+          const backdrop = document.createElement('div');
+          backdrop.id = 'adminReasonDialog';
+          backdrop.style.position = 'fixed'; backdrop.style.inset = '0';
+          backdrop.style.background = 'rgba(15,23,42,0.35)'; backdrop.style.display = 'flex';
+          backdrop.style.alignItems = 'center'; backdrop.style.justifyContent = 'center';
+          backdrop.style.zIndex = '9998';
+
+          const card = document.createElement('div');
+          card.className = 'card card-padded';
+          card.style.maxWidth = '420px'; card.style.width = '100%';
+
+          card.innerHTML = 
+            '<h3 class="font-bold mb-2">Temporarily Disable User</h3>' +
+            '<p class="text-sm text-muted mb-3">Optionally provide a reason for temporarily disabling this user. They will be unable to log in.</p>' +
+            '<div class="form-group" style="margin-top:0;">' +
+              '<label class="text-sm font-medium">Reason (optional)</label>' +
+              '<textarea id="adminReasonInput" class="form-textarea" rows="3" placeholder="Enter reason..."></textarea>' +
+            '</div>' +
+            '<div class="flex-row gap-3 mt-3">' +
+              '<button id="adminReasonConfirm" class="btn btn-emergency btn-sm" style="flex:1;">Confirm</button>' +
+              '<button id="adminReasonCancel" class="btn btn-sm" style="flex:1;">Cancel</button>' +
+            '</div>';
+
+          backdrop.appendChild(card);
+          document.body.appendChild(backdrop);
+
+          document.getElementById('adminReasonCancel').onclick = () => backdrop.remove();
+          document.getElementById('adminReasonConfirm').onclick = async function() {
+            this.innerHTML = '<span class="btn-spinner" style="display:inline-block;border-color:currentColor;border-bottom-color:transparent;"></span> Processing...';
+            this.disabled = true;
+            await new Promise(r => setTimeout(r, 1500));
+            
+            const reason = (document.getElementById('adminReasonInput').value || '').trim();
+            const res = await apiFetch(window.APP_ROOT + 'api/admin/verify_user.php', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ user_id: id, decision: 'disabled', reason }),
+            });
+            backdrop.remove();
+            if (res && res.success) {
+              showToast('Account Disabled', 'User account temporarily disabled', 'error');
+              setTimeout(() => location.reload(), 1500);
+            } else {
+               const err = document.getElementById('adminError');
+               if(err) { err.textContent = res ? res.message : 'Error disabling user'; err.style.display='block'; }
+            }
+          };
+        };
+
+        window.reactivateUser = async function(btn, id) {
+          btn.innerHTML = 'Reactivating...';
+          btn.disabled = true;
+          await new Promise(r => setTimeout(r, 1500));
+          const res = await apiFetch(window.APP_ROOT + 'api/admin/verify_user.php', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ user_id: id, decision: 'active' }),
+          });
+          if (res && res.success) {
+              showToast('Account Reactivated', 'User account reactivated', 'success');
+              setTimeout(() => location.reload(), 1500);
+          }
+        };
+    })();
+  </script>
+</body>
+</html>
+

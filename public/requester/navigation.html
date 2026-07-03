@@ -1,0 +1,884 @@
+﻿<!DOCTYPE html>
+<html lang="en">
+
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>AidFleet - Live Tracking</title>
+  <link rel="stylesheet" href="../css/style.css?v=3">
+  
+  <style>
+    @media (min-width: 1024px) {
+      .tracking-desktop-grid {
+        display: grid;
+        grid-template-columns: 1fr 380px;
+        gap: 20px;
+        align-items: start;
+      }
+      #trackingMap { height: calc(100vh - 220px) !important; min-height: 420px; }
+    }
+    .driver-accepted-overlay {
+      position: fixed; top: 0; left: 0; right: 0; bottom: 0;
+      background: rgba(0,0,0,0.88); z-index: 99999;
+      display: flex; align-items: center; justify-content: center;
+      animation: fadeInOverlay 0.35s ease;
+    }
+    @keyframes fadeInOverlay { from { opacity: 0; } to { opacity: 1; } }
+    .overlay-progress-track {
+      width: 240px; height: 5px; background: rgba(255,255,255,0.2);
+      border-radius: 3px; margin: 16px auto 0;
+      overflow: hidden;
+    }
+    .overlay-progress-fill {
+      height: 100%; background: #10b981;
+      border-radius: 3px; width: 0%;
+      transition: width 4s linear;
+    }
+  </style>
+<link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:opsz,wght,FILL,GRAD@20..48,100..700,0..1,-50..200" rel="stylesheet" />
+</head>
+
+<body>
+  <div class="app-layout" id="app"></div>
+
+  <!-- Driver Arrived Modal (shown automatically when driver arrives) -->
+  <div id="arrivedModal" class="modal-overlay" style="display:none;position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(0,0,0,0.5);z-index:9999;align-items:center;justify-content:center;">
+    <div class="card card-padded" style="max-width:420px;width:100%;margin:20px;background:#fff;">
+      <div style="text-align:center;margin-bottom:16px;"><span style="font-size:48px;"><span class="material-symbols-outlined inline-icon">emergency_share</span></span></div>
+      <h2 class="font-bold text-lg text-center" style="margin-bottom:8px;">Ambulance Has Arrived!</h2>
+      <p class="text-muted text-sm text-center" id="arrivedModalBody" style="margin-bottom:24px;">Your ambulance driver has arrived at your location. Please proceed to the vehicle.</p>
+      <div class="flex-row gap-3">
+        <button class="btn btn-success btn-full" onclick="dismissArrivedModal()">OK, Understood</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Cancel Emergency Confirmation -->
+  <div id="cancelConfirmModal" class="modal-overlay" style="display:none;position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(0,0,0,0.5);z-index:9999;align-items:center;justify-content:center;">
+    <div class="card card-padded" style="max-width:420px;width:100%;margin:20px;background:#fff;">
+      <div style="text-align:center;margin-bottom:16px;"><span class="material-symbols-outlined" style="font-size:40px;color:var(--destructive);">warning</span></div>
+      <h2 class="font-bold text-lg text-center" style="margin-bottom:8px;">Cancel Emergency Request?</h2>
+      <p class="text-muted text-sm text-center" style="margin-bottom:24px;">Are you sure you want to cancel the request? This action cannot be undone.</p>
+      <div class="flex-row gap-3">
+        <button class="btn btn-outline" style="flex:1;" onclick="closeCancelConfirmModal()">No, Keep Request</button>
+        <button class="btn btn-outline-destructive" style="flex:1;" onclick="confirmCancelActive()">Yes, Cancel</button>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    // Initialize routing base
+    window.APP_ROOT = "../";
+  </script>
+  <script src="../js/data.js"></script>
+  <script src="../js/maps-integration.js"></script>
+  <script>
+    (async () => {
+      const user = await requireAuth(['requester']);
+      if (!user) return;
+
+      let elapsed = 0;
+      let activeRequest = null;
+      let tick = 0;
+      let timerKey = null;
+      let timerStartMs = null;
+
+      let isMapInitialized = false;
+      let driverMarker = null;
+      let destMarker = null;
+      let lastEtaUpdate = 0;
+      let _arrivedModalShown = false;
+
+      // Check sessionStorage for previously shown arrived modal
+      try {
+        const shownKey = sessionStorage.getItem('aidfleet_arrived_modal_shown');
+        if (shownKey) _arrivedModalShown = true;
+      } catch(e) {}
+
+      let isAutoCentering = true;
+      let lastKnownDispatchId = null;
+      let lastKnownDispatchStatus = null;
+      let lastKnownRequestId = null;
+      let rejectionOverlayShown = false;
+      let responseCancelledShown = false;
+      window.ratingUIActive = false;
+      
+      function buildContactNumbersCard(dispatch) {
+        const hasDriver = !!(dispatch && (dispatch.driver_name || dispatch.driver_id));
+        const driverPhone = hasDriver ? (dispatch.driver_phone || '').trim() : '';
+        const displayPhone = hasDriver ? (driverPhone || 'Fetching...') : 'Not assigned yet';
+        return '<div class="card card-padded contact-card">' +
+          '<p class="text-xs text-muted contact-card-title">Contacts</p>' +
+          '<p class="text-sm mt-2 contact-row" id="contactDriverPhone">' +
+          '<span class="material-symbols-outlined inline-icon">phone</span><span>Driver: <strong>' + escapeHtml(displayPhone) + '</strong></span>' +
+          '</p></div>';
+      }
+
+      async function enrichDriverPhone(dispatch) {
+        if (!dispatch || (dispatch.driver_phone || '').trim() || !dispatch.driver_id) return;
+        try {
+          const p = await apiFetch(window.APP_ROOT + 'api/drivers/phone.php?driver_id=' + encodeURIComponent(dispatch.driver_id));
+          if (p && p.success && p.phone) {
+            dispatch.driver_phone = p.phone;
+            if (activeRequest && activeRequest.dispatch) {
+              activeRequest.dispatch.driver_phone = p.phone;
+            }
+          }
+        } catch (e) {}
+      }
+      
+      window.recenterMap = function() {
+        isAutoCentering = true;
+        if (driverMarker && AidFleetMaps.map) {
+          const ll = driverMarker.getLatLng();
+          AidFleetMaps.map.panTo({ lat: ll.lat, lng: ll.lng });
+        } else if (activeRequest && AidFleetMaps.map) {
+          const rLat = parseFloat(activeRequest.lat);
+          const rLng = parseFloat(activeRequest.lng);
+          if (isFinite(rLat) && isFinite(rLng)) {
+            AidFleetMaps.map.panTo({ lat: rLat, lng: rLng });
+          }
+        }
+      };
+
+      async function loadActive() {
+        const r = await apiFetch(window.APP_ROOT + 'api/request/active.php');
+        activeRequest = r && r.request ? r.request : null;
+        if (!activeRequest) {
+          elapsed = 0;
+          timerKey = null;
+          timerStartMs = null;
+          return;
+        }
+
+        // Special handling: if this "active" request is actually an older
+        // rejected one, but the user has since completed a newer trip
+        if (activeRequest.request_status === 'rejected') {
+          try {
+            const listRes = await apiFetch(window.APP_ROOT + 'api/request/list.php');
+            const all = (listRes && listRes.requests) ? listRes.requests : [];
+            const currentTime = new Date(activeRequest.request_time).getTime();
+            const hasNewerCompleted = all.some(r => {
+              if (!r.request_time) return false;
+              const t = new Date(r.request_time).getTime();
+              return t > currentTime && r.request_status === 'completed';
+            });
+            if (hasNewerCompleted) {
+              activeRequest = null;
+              elapsed = 0;
+              timerKey = null;
+              timerStartMs = null;
+              return;
+            }
+          } catch (e) {}
+        }
+
+        const dispatch = activeRequest.dispatch || null;
+        const dispatchStatus = dispatch ? dispatch.dispatch_status : null;
+
+        if (dispatch) {
+          await enrichDriverPhone(dispatch);
+        }
+
+        // Initialize or reuse a local timer start when a dispatch is accepted.
+        if (dispatch && (dispatchStatus === 'accepted' || dispatchStatus === 'arrived' || dispatchStatus === 'enroute_hospital')) {
+          const key = 'aidfleet_timer_' + activeRequest.request_id + '_' + dispatch.dispatch_id;
+          if (timerKey !== key) {
+            timerKey = key;
+            const stored = window.localStorage.getItem(timerKey);
+            if (stored) {
+              const parsed = parseInt(stored, 10);
+              timerStartMs = isNaN(parsed) ? Date.now() : parsed;
+            } else {
+              timerStartMs = Date.now();
+              try {
+                window.localStorage.setItem(timerKey, String(timerStartMs));
+              } catch (e) {}
+            }
+          }
+          if (timerStartMs) {
+            const base = Math.floor((Date.now() - timerStartMs) / 1000);
+            if (elapsed < base) {
+              elapsed = base;
+            }
+          }
+        } else {
+          timerKey = null;
+          timerStartMs = null;
+          elapsed = 0;
+        }
+
+        // Keep arrived modal content in sync; show once per trip
+        if (dispatch && dispatchStatus === 'arrived') {
+          const driverName = dispatch.driver_name || 'The driver';
+          const driverPhone = (dispatch.driver_phone || '').trim();
+          const bodyEl = document.getElementById('arrivedModalBody');
+          if (bodyEl) {
+            bodyEl.innerHTML = '<strong>' + escapeHtml(driverName) + '</strong> has arrived at your location.' +
+              (driverPhone ? '<br><br><span class="material-symbols-outlined inline-icon">phone</span> Driver: <strong>' + escapeHtml(driverPhone) + '</strong>' : '') +
+              '<br><br>Please proceed to the ambulance vehicle.';
+          }
+          if (!_arrivedModalShown) {
+            _arrivedModalShown = true;
+            try { sessionStorage.setItem('aidfleet_arrived_modal_shown', '1'); } catch(e) {}
+            document.getElementById('arrivedModal').style.display = 'flex';
+          }
+        }
+
+        // Clear arrived modal flag when dispatch completes
+        if (!dispatch || dispatchStatus === 'completed' || dispatchStatus === 'rejected') {
+          try { sessionStorage.removeItem('aidfleet_arrived_modal_shown'); } catch(e) {}
+        }
+      }
+
+      window.dismissArrivedModal = function() {
+        document.getElementById('arrivedModal').style.display = 'none';
+      };
+
+      window.cancelFromArrived = async function() {
+        document.getElementById('arrivedModal').style.display = 'none';
+        if (!activeRequest) return;
+        const res = await apiFetch(window.APP_ROOT + 'api/request/cancel.php', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ request_id: activeRequest.request_id }),
+        });
+        if (res.success) {
+          try { sessionStorage.removeItem('aidfleet_arrived_modal_shown'); } catch(e) {}
+          if (typeof showToast === 'function') {
+            showToast('Emergency Cancelled', 'Your emergency request has been cancelled.', 'warning');
+          }
+          setTimeout(() => { window.location.href = window.APP_ROOT + 'requester/dashboard.html'; }, 1000);
+        }
+      };
+
+      let lastRenderHash = '';
+
+      function render() {
+        if (window.ratingUIActive || responseCancelledShown) return;
+        if (!activeRequest) {
+          const emptyHTML = renderSidebar('requester', 'navigation.html') +
+            '<div class="main-area">' + renderTopbar([]) +
+            '<div class="content"><div style="display:flex;align-items:center;justify-content:center;min-height:60vh;">' +
+            '<div class="nav-empty-state"><span class="material-symbols-outlined nav-empty-hazard">warning</span>' +
+            '<h2 class="font-bold" style="font-size:20px;">No Active Emergency</h2>' +
+            '<p class="text-sm text-muted mt-2">You don\'t have any active emergency requests to track.</p></div>' +
+            '</div></div></div>';
+          if (lastRenderHash !== 'empty') {
+            document.getElementById('app').innerHTML = emptyHTML;
+lastRenderHash = 'empty';
+          }
+          return;
+        }
+
+        const dispatch = activeRequest.dispatch || null;
+        const dispatchStatus = dispatch ? dispatch.dispatch_status : null;
+        const isRejected = dispatchStatus === 'rejected';
+
+        // --- Truthful Notifications ---
+        const notifications = [];
+        if (dispatch) {
+          if (dispatchStatus === 'selected') {
+            notifications.push({ message: '<span class="material-symbols-outlined notif-icon">schedule</span> A driver has been selected and is awaiting response', time: dispatch.dispatch_time });
+          } else if (dispatchStatus === 'accepted') {
+            notifications.push({ message: '<span class="material-symbols-outlined notif-icon">emergency_share</span> Your emergency request has been accepted! Driver is on the way.', time: dispatch.driver_response_time || dispatch.dispatch_time });
+          } else if (dispatchStatus === 'arrived') {
+            notifications.push({ message: '<span class="material-symbols-outlined notif-icon">location_on</span> The ambulance driver has arrived at your location.', time: new Date().toISOString() });
+          } else if (dispatchStatus === 'enroute_hospital') {
+            notifications.push({ message: '<span class="material-symbols-outlined notif-icon">monitor_heart</span> You are being navigated to ' + escapeHtml(dispatch.hospital_name || 'the hospital') + '.', time: new Date().toISOString() });
+          } else if (isRejected) {
+            notifications.push({ message: '<span class="material-symbols-outlined notif-icon">warning</span> Your selected driver rejected the dispatch. You can choose another ambulance.', time: new Date().toISOString() });
+          }
+        }
+
+        let etaText = '';
+        if (dispatch && (dispatchStatus === 'selected' || dispatchStatus === 'accepted' || dispatchStatus === 'enroute_hospital')) {
+          const dLat = parseFloat(dispatch.last_lat);
+          const dLng = parseFloat(dispatch.last_lng);
+          let targetLat = parseFloat(activeRequest.lat);
+          let targetLng = parseFloat(activeRequest.lng);
+          
+          if (dispatchStatus === 'enroute_hospital' && dispatch.hospital_lat) {
+            targetLat = parseFloat(dispatch.hospital_lat);
+            targetLng = parseFloat(dispatch.hospital_lng);
+          }
+          
+          if (isFinite(dLat) && isFinite(dLng) && isFinite(targetLat) && isFinite(targetLng)) {
+            const distKm = getDistance(dLat, dLng, targetLat, targetLng);
+            if (isFinite(distKm) && distKm > 0) {
+              etaText = '~' + Math.ceil(distKm * 3) + ' min';
+            }
+          }
+        }
+
+        // Only allow cancellation before the driver arrives at the scene.
+        // Once arrived or en route to hospital, standard users cannot cancel mid-transport.
+        const canCancel =
+          ['pending', 'driver_selected', 'accepted'].includes(activeRequest.request_status) &&
+          (!dispatch || !['arrived', 'enroute_hospital', 'completed'].includes(dispatchStatus)) ||
+          isRejected;
+        const canSelectAnother = isRejected;
+        const canSelectFirst = !dispatch && activeRequest.request_status === 'pending';
+
+        // Determine if we should show a live map (for accepted, arrived, enroute_hospital)
+        const showLiveMap = dispatch && ['accepted', 'selected', 'arrived', 'enroute_hospital'].includes(dispatchStatus);
+
+        const currentHash = JSON.stringify({
+          status: activeRequest.request_status,
+          cancel: canCancel,
+          selectAnother: canSelectAnother,
+          selectFirst: canSelectFirst,
+          dispatchStatus: dispatchStatus,
+          driverName: dispatch ? dispatch.driver_name : null,
+          driverPhone: dispatch ? (dispatch.driver_phone || '') : null,
+          hasContact: !!(dispatch && (dispatch.driver_name || dispatch.driver_id)),
+          hospitalName: dispatch ? dispatch.hospital_name : null
+        });
+
+        let mapUi = '<div class="map-with-recenter" style="position:relative;flex:1;">' +
+            '<div id="trackingMap" style="height:380px;background:#f1f5f9;border-radius:8px;"></div>' +
+            '<div style="position:absolute;bottom:8px;left:8px;background:rgba(255,255,255,0.9);padding:4px 8px;border-radius:4px;font-size:11px;z-index:10;pointer-events:none;">' +
+            '<p class="text-muted" style="margin:0;">Requester: ' + escapeHtml(activeRequest.lat) + ', ' + escapeHtml(activeRequest.lng) + '</p>' +
+            '<p class="text-muted" style="margin:0;" id="driverLocLabel"></p>' +
+            '</div>' +
+            '<button type="button" id="recenterBtn" class="recenter-map-btn" onclick="recenterMap()"><span class="material-symbols-outlined">my_location</span></button>' +
+            '</div>';
+
+        let ambulanceStatusUi = '';
+        if (dispatchStatus === 'selected') {
+          ambulanceStatusUi = '<p class="text-sm text-success mt-1"><strong>Status:</strong> Awaiting driver response</p>' +
+                              '<p class="text-sm text-success mt-1" id="etaLabel"></p>';
+        } else if (dispatchStatus === 'accepted') {
+          ambulanceStatusUi = '<p class="text-sm text-success mt-1"><strong>Status:</strong> On route to you</p>' +
+                              '<p class="text-sm text-success mt-1" id="etaLabel"></p>';
+        } else if (dispatchStatus === 'arrived') {
+          const arrivedPhone = (dispatch && dispatch.driver_phone) ? String(dispatch.driver_phone).trim() : '';
+          ambulanceStatusUi = '<p class="text-sm text-success mt-1"><strong>Status:</strong> ' + escapeHtml(dispatch.driver_name || 'Driver') + ' has arrived at your location</p>' +
+            (arrivedPhone ? '<p class="text-sm text-muted mt-1"><span class="material-symbols-outlined inline-icon">phone</span> Driver: <strong>' + escapeHtml(arrivedPhone) + '</strong></p>' : '');
+        } else if (dispatchStatus === 'enroute_hospital') {
+          ambulanceStatusUi = '<p class="text-sm text-success mt-1"><strong>Status:</strong> Navigating to ' + escapeHtml(dispatch.hospital_name || 'hospital') + '</p>';
+        } else if (isRejected) {
+          const rejectReason = ((dispatch && dispatch.reject_reason) || '').trim() || 'Unspecified';
+          ambulanceStatusUi = '<p class="text-sm text-destructive mt-2"><strong>Status:</strong> Rejected by driver</p>' +
+            '<p class="text-sm text-muted mt-1"><strong>Reason:</strong> ' + escapeHtml(rejectReason) + '</p>';
+          if (!rejectionOverlayShown) {
+            rejectionOverlayShown = true;
+            showDriverRejectedOverlay(rejectReason);
+          }
+        }
+
+        let topBadgeHtml = getStatusBadge(activeRequest.request_status);
+        if (dispatchStatus === 'arrived') {
+          topBadgeHtml = '<span class="badge badge-success">Driver Arrived</span>';
+        } else if (dispatchStatus === 'enroute_hospital') {
+          topBadgeHtml = '<span class="badge badge-success">Navigating to Hospital</span>';
+        }
+
+        // Hospital info card (shown during enroute_hospital)
+        let hospitalCard = '';
+        if (dispatch && dispatchStatus === 'enroute_hospital' && dispatch.hospital_name) {
+          hospitalCard = '<div class="card card-padded">' +
+            '<p class="text-xs text-muted" style="text-transform:uppercase;font-weight:500;">Destination Hospital</p>' +
+            '<h3 class="font-bold mt-2"><span class="material-symbols-outlined inline-icon">apartment</span> ' + escapeHtml(dispatch.hospital_name) + '</h3>' +
+            '</div>';
+        }
+
+        // Right-side info panel (cards + timer + buttons)
+        const contactCard = buildContactNumbersCard(dispatch);
+        const infoPanel =
+            '<div class="card card-padded"><p class="text-xs text-muted" style="text-transform:uppercase;font-weight:500;">Emergency Details</p>' +
+            '<h3 class="font-bold mt-2">' + escapeHtml(activeRequest.emergency_type || 'Emergency') + '</h3>' +
+            '<p class="text-sm text-muted mt-1">' + escapeHtml(activeRequest.description) + '</p>' +
+            '<p class="text-sm text-muted mt-3"><span class="material-symbols-outlined inline-icon">location_on</span> ' + escapeHtml(activeRequest.location) + '</p>' +
+            '</div>' +
+            contactCard +
+            '<div class="card card-padded"><p class="text-xs text-muted" style="text-transform:uppercase;font-weight:500;">Ambulance</p>' +
+            (dispatch && dispatch.driver_name
+              ? '<h3 class="font-bold mt-2">' + escapeHtml(dispatch.driver_name) + '</h3>' +
+                '<p class="text-sm text-muted mt-1">' + escapeHtml((dispatch.ambulance_registration || '').toUpperCase()) + ' &bull; ' + escapeHtml(dispatch.ambulance_type || '') + '</p>' +
+                ambulanceStatusUi
+              : '<p class="text-sm text-muted mt-2">Awaiting driver assignment...</p>') +
+            '</div>' +
+            (hospitalCard || '') +
+            '<div class="timer-bar"><span class="text-muted"><span class="material-symbols-outlined inline-icon">schedule</span> Elapsed:</span><span class="timer-value" id="timerVal"></span></div>' +
+            (canSelectFirst ? '<button class="btn btn-emergency btn-full" onclick="selectAmbulance()">Select ambulance</button>' : '') +
+            (canCancel ? '<button class="btn btn-outline-destructive btn-full" style="margin-top:8px;" onclick="openCancelConfirmModal()">Cancel Emergency Request</button>' : '') +
+            (canSelectAnother ? '<button class="btn btn-emergency btn-full" style="margin-top:8px;" onclick="selectAnother()">Select another ambulance</button>' : '');
+
+        const rejectionBanner = isRejected ? 
+          '<div class="card card-padded" style="border:2px solid var(--destructive);background:rgba(239,68,68,0.05);margin-bottom:16px;">' +
+            '<h3 class="font-bold text-destructive mb-2"><span class="material-symbols-outlined inline-icon">warning</span> Driver Rejected Request</h3>' +
+            '<p class="text-sm mb-3">Please select another ambulance or cancel your request.</p>' +
+            '<div style="display:flex;gap:12px;flex-wrap:wrap;">' +
+            '<button class="btn btn-emergency" style="flex:1;" onclick="selectAnother()">Select another ambulance</button>' +
+            '<button class="btn btn-outline-destructive" style="flex:1;" onclick="openCancelConfirmModal()">Cancel Emergency</button>' +
+            '</div></div>' : '';
+
+        if (lastRenderHash !== currentHash) {
+          document.getElementById('app').innerHTML =
+            renderSidebar('requester', 'navigation.html') +
+            '<div class="main-area">' + renderTopbar(notifications) +
+            '<div class="content"><div class="space-y-4">' + rejectionBanner +
+            '<div class="flex-between"><div><h1 class="page-title">Navigation</h1><p class="page-subtitle">Track your ambulance in real time</p></div>' + topBadgeHtml + '</div>' +
+            '<div class="tracking-desktop-grid">' +
+              mapUi +
+              '<div class="space-y-4" style="display:flex;flex-direction:column;gap:16px;">' + infoPanel + '</div>' +
+            '</div>' +
+            '</div></div></div>';
+lastRenderHash = currentHash;
+
+          // Reset map state since DOM was rebuilt
+          isMapInitialized = false;
+          driverMarker = null;
+          destMarker = null;
+          lastEtaUpdate = 0;
+        }
+
+        // Update dynamic data elements directly to avoid DOM reset
+        const timerVal = document.getElementById('timerVal');
+        if (timerVal) {
+          const m = Math.floor(elapsed / 60);
+          const s = elapsed % 60;
+          timerVal.textContent = String(m).padStart(2, '0') + ':' + String(s).padStart(2, '0');
+        }
+
+        const locLabel = document.getElementById('driverLocLabel');
+        if (locLabel && dispatch) {
+          locLabel.textContent = 'Ambulance: Lat: ' + (dispatch.last_lat || '-') + ', Lng: ' + (dispatch.last_lng || '-');
+        }
+
+        const etaLabel = document.getElementById('etaLabel');
+        if (etaLabel && etaText) {
+          etaLabel.innerHTML = '<strong>ETA:</strong> ' + escapeHtml(etaText);
+        }
+
+        const driverPhoneLabel = document.getElementById('contactDriverPhone');
+        if (driverPhoneLabel && dispatch) {
+          const ph = (dispatch.driver_phone || '').trim();
+          driverPhoneLabel.innerHTML = ph
+            ? '<span class="material-symbols-outlined inline-icon">phone</span><span>Driver: <strong>' + escapeHtml(ph) + '</strong></span>'
+            : '<span class="material-symbols-outlined inline-icon">phone</span><span>Driver: <strong>Fetching...</strong></span>';
+        }
+
+        // --- Live Map Integration ---
+        if (showLiveMap && activeRequest.lat && activeRequest.lng) {
+          const rLat = parseFloat(activeRequest.lat);
+          const rLng = parseFloat(activeRequest.lng);
+          const dLat = dispatch ? parseFloat(dispatch.last_lat) : NaN;
+          const dLng = dispatch ? parseFloat(dispatch.last_lng) : NaN;
+
+          if (isFinite(rLat) && isFinite(rLng)) {
+            AidFleetMaps.loadMapLib(() => {
+              if (!isMapInitialized) {
+                // Initialize map
+                if (dispatchStatus === 'enroute_hospital' && dispatch.hospital_lat && dispatch.hospital_lng) {
+                  // Center on midpoint between driver and hospital
+                  const hLat = parseFloat(dispatch.hospital_lat);
+                  const hLng = parseFloat(dispatch.hospital_lng);
+                  AidFleetMaps.initMap('trackingMap', isFinite(dLat) ? dLat : rLat, isFinite(dLng) ? dLng : rLng, 16);
+                  if (isFinite(dLat) && isFinite(dLng)) {
+                    driverMarker = AidFleetMaps.createMarker(dLat, dLng, dispatch.ambulance_registration || 'Ambulance', 'ambulance');
+                  }
+                  destMarker = AidFleetMaps.createMarker(hLat, hLng, dispatch.hospital_name || 'Hospital', 'hospital');
+                  if (isFinite(dLat) && isFinite(dLng)) {
+                    AidFleetMaps.drawRoute(dLat, dLng, hLat, hLng);
+                  }
+                } else {
+                  AidFleetMaps.initMap('trackingMap', isFinite(dLat) ? dLat : rLat, isFinite(dLng) ? dLng : rLng, 16);
+                  destMarker = AidFleetMaps.createMarker(rLat, rLng, 'Emergency Location', 'requester');
+                  if (isFinite(dLat) && isFinite(dLng)) {
+                    driverMarker = AidFleetMaps.createMarker(dLat, dLng, dispatch.ambulance_registration || 'Ambulance', 'ambulance');
+                    if (dispatchStatus === 'accepted' || dispatchStatus === 'selected') {
+                      AidFleetMaps.drawRoute(dLat, dLng, rLat, rLng);
+                    }
+                  }
+                }
+                isMapInitialized = true;
+                if (AidFleetMaps.map) {
+                  AidFleetMaps.map.addListener('dragstart', function() {
+                    isAutoCentering = false;
+                  });
+                }
+              } else if (isFinite(dLat) && isFinite(dLng) && driverMarker) {
+                // Smoothly animate the ambulance to the newly polled coordinate and pan the map with it
+                AidFleetMaps.animateMarker(driverMarker, dLat, dLng, 3000, isAutoCentering);
+              }
+
+              // Periodically update the real ETA (throttled to 30s)
+              const now = Date.now();
+              let etaDestLat = null, etaDestLng = null;
+              if (dispatchStatus === 'accepted' || dispatchStatus === 'selected') {
+                etaDestLat = rLat; etaDestLng = rLng;
+              } else if (dispatchStatus === 'enroute_hospital' && dispatch.hospital_lat) {
+                etaDestLat = parseFloat(dispatch.hospital_lat);
+                etaDestLng = parseFloat(dispatch.hospital_lng);
+              }
+
+              if (isFinite(dLat) && isFinite(dLng) && etaDestLat && etaDestLng && (now - lastEtaUpdate > 20000 || lastEtaUpdate === 0)) {
+                lastEtaUpdate = now;
+                AidFleetMaps.getLiveETA(dLat, dLng, etaDestLat, etaDestLng, (res) => {
+                  const el = document.getElementById('etaLabel');
+                  if (el) {
+                    if (res.success) {
+                      el.innerHTML = '<strong>ETA:</strong> ' + escapeHtml(res.text);
+                    }
+                  }
+                });
+              }
+            });
+          }
+        }
+      }
+
+      window.openCancelConfirmModal = function() {
+        document.getElementById('cancelConfirmModal').style.display = 'flex';
+      };
+
+      window.closeCancelConfirmModal = function() {
+        document.getElementById('cancelConfirmModal').style.display = 'none';
+      };
+
+      window.confirmCancelActive = async function() {
+        closeCancelConfirmModal();
+        await cancelActive();
+      };
+
+      window.cancelActive = async function () {
+        if (!activeRequest) return;
+        const dispatchStatus = activeRequest.dispatch ? activeRequest.dispatch.dispatch_status : null;
+        if (['arrived', 'enroute_hospital', 'completed'].includes(dispatchStatus)) {
+          if (typeof showToast === 'function') {
+            showToast('Cannot Cancel', 'You cannot cancel the request once the ambulance has arrived.', 'warning');
+          }
+          return;
+        }
+        const res = await apiFetch(window.APP_ROOT + 'api/request/cancel.php', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ request_id: activeRequest.request_id }),
+        });
+        if (res.success) {
+          try { sessionStorage.removeItem('aidfleet_arrived_modal_shown'); } catch(e) {}
+          window.location.href = window.APP_ROOT + 'requester/dashboard.html';
+        }
+      };
+
+      async function goToDriverSelection() {
+        try { sessionStorage.setItem('aidfleet_open_driver_select', '1'); } catch (e) {}
+        try {
+          await apiFetch(window.APP_ROOT + 'api/request/reopen.php', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({}),
+          });
+        } catch (e) {}
+        window.location.href = 'emergency-form.html';
+      }
+
+      window.selectAnother = goToDriverSelection;
+      window.selectAmbulance = goToDriverSelection;
+      window.selectAnotherDriver = goToDriverSelection;
+
+      async function resolveClosedTrip() {
+        try {
+          const listRes = await apiFetch(window.APP_ROOT + 'api/request/list.php');
+          const all = (listRes && listRes.requests) ? listRes.requests : [];
+          let closed = null;
+          if (lastKnownRequestId) {
+            closed = all.find(r => String(r.request_id) === String(lastKnownRequestId));
+          }
+          if (!closed && all.length) closed = all[0];
+          if (closed && closed.request_status === 'cancelled') {
+            renderResponseCancelledUI(closed.reject_reason || '');
+            return true;
+          }
+          if (closed && closed.dispatch_status === 'completed') {
+            _ratingDispatchId = closed.dispatch_id || lastKnownDispatchId;
+            renderRatingUI();
+            return true;
+          }
+        } catch (e) {}
+        return false;
+      }
+
+      function renderResponseCancelledUI(reason) {
+        if (responseCancelledShown) return;
+        responseCancelledShown = true;
+        clearInterval(window.trackingIntervalId);
+        const displayReason = (reason || '').trim() || 'Unspecified';
+        document.getElementById('app').innerHTML =
+          renderSidebar('requester', 'navigation.html') +
+          '<div class="main-area">' + renderTopbar([]) +
+          '<div class="content"><div class="confirm-screen"><div class="text-center">' +
+            '<div class="confirm-icon" style="background:var(--destructive,#ef4444);"><span class="material-symbols-outlined inline-icon">cancel</span></div>' +
+            '<h2 class="font-bold" style="font-size:20px;">Emergency Response Cancelled</h2>' +
+            '<p class="text-sm text-muted mt-2">The driver cancelled this emergency response.</p>' +
+            '<p class="text-sm text-muted mt-2"><strong>Reason:</strong> ' + escapeHtml(displayReason) + '</p>' +
+            '<button class="btn btn-emergency btn-sm mt-4" onclick="selectAnotherDriver()">Select another driver</button>' +
+            '<button class="btn btn-outline btn-sm mt-2" style="margin-left:8px;" onclick="window.location.href=\'dashboard.html\'">Go to Dashboard</button>' +
+          '</div></div></div></div>';
+      }
+
+      function showDriverRejectedOverlay(reason) {
+        const existing = document.getElementById('driverRejectedOverlay');
+        if (existing) existing.remove();
+        const displayReason = (reason || '').trim() || 'Unspecified';
+        const ov = document.createElement('div');
+        ov.id = 'driverRejectedOverlay';
+        ov.className = 'driver-accepted-overlay';
+        ov.innerHTML =
+          '<div style="text-align:center;color:#fff;padding:40px;max-width:480px;">' +
+            '<div style="font-size:64px;margin-bottom:16px;color:#ef4444;"><span class="material-symbols-outlined" style="font-size:64px;">block</span></div>' +
+            '<h2 style="font-size:26px;font-weight:800;margin-bottom:10px;">Driver Rejected Request</h2>' +
+            '<p style="font-size:15px;opacity:0.85;line-height:1.6;margin-bottom:8px;">The driver declined your dispatch.</p>' +
+            '<p style="font-size:14px;opacity:0.75;line-height:1.5;"><strong>Reason:</strong> ' + escapeHtml(displayReason) + '</p>' +
+            '<div class="overlay-progress-track"><div id="_rejProg" class="overlay-progress-fill" style="background:#ef4444;"></div></div>' +
+          '</div>';
+        document.body.appendChild(ov);
+        setTimeout(function() { const b = document.getElementById('_rejProg'); if (b) b.style.width = '100%'; }, 60);
+        setTimeout(function() { if (ov.parentNode) ov.parentNode.removeChild(ov); }, 5000);
+      }
+
+      await loadActive();
+      render();
+
+      window.trackingIntervalId = setInterval(async () => {
+        if (window.ratingUIActive || responseCancelledShown) return;
+        // Skip all processing when tab is hidden â€” saves API and backend calls
+        if (typeof AidFleetMaps !== 'undefined' && !AidFleetMaps.isPageActive()) return;
+
+        tick++;
+        if (!activeRequest) {
+          if (window.ratingUIActive) return;
+          if (tick % 5 === 0) await loadActive();
+          if (!window.ratingUIActive) render();
+          return;
+        }
+        const dispatch = activeRequest.dispatch || null;
+        const dispatchStatus = dispatch ? dispatch.dispatch_status : null;
+        const isRejected = dispatchStatus === 'rejected';
+        const isClosed = ['completed', 'cancelled'].includes(activeRequest.request_status);
+
+        // Count elapsed time while dispatch is active (accepted/arrived/enroute_hospital)
+        const trackingActive = ['accepted', 'arrived', 'enroute_hospital'].includes(dispatchStatus) && !isRejected && !isClosed;
+        if (trackingActive) {
+          elapsed++;
+        }
+
+        // Check for completion - redirect to dashboard
+        if (tick % 5 === 0) {
+          const prevStatus = dispatchStatus;
+          const prevHospital = dispatch ? dispatch.hospital_name : null;
+          
+          await loadActive();
+          
+          const newStatus = (activeRequest && activeRequest.dispatch) ? activeRequest.dispatch.dispatch_status : null;
+          const newHospital = (activeRequest && activeRequest.dispatch) ? activeRequest.dispatch.hospital_name : null;
+          
+          if (prevStatus === 'enroute_hospital' && newStatus === 'enroute_hospital') {
+              if (prevHospital && newHospital && prevHospital !== newHospital) {
+                  if (typeof showToast === 'function') {
+                      showToast('Destination Updated', 'Destination hospital has been changed to ' + newHospital, 'info');
+                  }
+              }
+          }
+          
+          if (prevStatus === 'selected' && newStatus === 'rejected') {
+              const rejectReason = (activeRequest && activeRequest.dispatch) ? activeRequest.dispatch.reject_reason : '';
+              showDriverRejectedOverlay(rejectReason);
+          }
+
+          if (prevStatus === 'selected' && newStatus === 'accepted') {
+              showDriverAcceptedOverlay();
+              try {
+                  const audio = new Audio('https://assets.mixkit.co/active_storage/sfx/2869/2869-preview.mp3');
+                  audio.play();
+              } catch(e) {}
+          }
+          
+          if (prevStatus === 'accepted' && newStatus === 'arrived') {
+              if (typeof showToast === 'function') {
+                  showToast('Driver Arrived', 'The ambulance driver has arrived at your location.', 'success');
+              }
+              try {
+                  const audio = new Audio('https://assets.mixkit.co/active_storage/sfx/2869/2869-preview.mp3');
+                  audio.play();
+              } catch(e) {}
+          }
+
+          // If dispatch completed, show rating modal instead of auto-redirect
+          if (activeRequest && activeRequest.dispatch && activeRequest.dispatch.dispatch_status === 'completed') {
+            try { sessionStorage.removeItem('aidfleet_arrived_modal_shown'); } catch(e) {}
+            
+            // Pre-capture dispatch_id before it becomes unavailable
+            _ratingDispatchId = activeRequest.dispatch.dispatch_id;
+            clearInterval(window.trackingIntervalId);
+            
+            // Render the rating UI in place of the map
+            renderRatingUI();
+            return;
+          }
+          if (!activeRequest) {
+            try { sessionStorage.removeItem('aidfleet_arrived_modal_shown'); } catch(e) {}
+            if (lastKnownDispatchStatus && ['accepted', 'arrived', 'enroute_hospital'].includes(lastKnownDispatchStatus)) {
+              const handled = await resolveClosedTrip();
+              if (handled) return;
+            }
+            render();
+            return;
+          }
+        }
+
+        // Track last known status for rating detection
+        if (activeRequest && activeRequest.dispatch) {
+          lastKnownDispatchId = activeRequest.dispatch.dispatch_id;
+          lastKnownDispatchStatus = activeRequest.dispatch.dispatch_status;
+        }
+        if (activeRequest) {
+          lastKnownRequestId = activeRequest.request_id;
+        }
+        if (!window.ratingUIActive && !responseCancelledShown) render();
+      }, 1000);
+
+    function showDriverAcceptedOverlay() {
+      const existing = document.getElementById('driverAcceptedOverlay');
+      if (existing) existing.remove();
+      const ov = document.createElement('div');
+      ov.id = 'driverAcceptedOverlay';
+      ov.className = 'driver-accepted-overlay';
+      ov.innerHTML =
+        '<div style="text-align:center;color:#fff;padding:40px;max-width:480px;">' +
+          '<div style="margin-bottom:16px;color:var(--primary);"><span class="material-symbols-outlined" style="font-size:64px;">emergency_share</span></div>' +
+          '<h2 style="font-size:26px;font-weight:800;margin-bottom:10px;">Driver Accepted!</h2>' +
+          '<p style="font-size:15px;opacity:0.85;line-height:1.6;">The driver accepted your request, redirecting to navigation...</p>' +
+          '<div class="overlay-progress-track"><div id="_accProg" class="overlay-progress-fill"></div></div>' +
+        '</div>';
+      document.body.appendChild(ov);
+      setTimeout(() => { const b = document.getElementById('_accProg'); if (b) b.style.width = '100%'; }, 60);
+      setTimeout(() => { if (ov.parentNode) ov.parentNode.removeChild(ov); }, 4500);
+    }
+
+    // Also capture dispatch_id on initial load in case it's already available
+      if (activeRequest && activeRequest.dispatch) {
+        lastKnownDispatchId = activeRequest.dispatch.dispatch_id;
+        lastKnownDispatchStatus = activeRequest.dispatch.dispatch_status;
+      }
+      if (activeRequest) {
+        lastKnownRequestId = activeRequest.request_id;
+      }
+    })();
+
+    // --- Rating System UI ---
+    let selectedRating = 5;
+    let _ratingDispatchId = null;
+    
+    window.setRating = function(val) {
+      selectedRating = val;
+      for (let i = 1; i <= 5; i++) {
+        const star = document.getElementById('star_' + i);
+        if (star) {
+          if (i <= val) {
+            star.style.color = '#fbbf24';
+            star.style.fontVariationSettings = "'FILL' 1";
+          } else {
+            star.style.color = '#cbd5e1';
+            star.style.fontVariationSettings = "'FILL' 0";
+          }
+        }
+      }
+    };
+    
+    window.submitRating = async function() {
+      const dispatchId = _ratingDispatchId;
+      if (!dispatchId) {
+        if (typeof showToast === 'function') {
+          showToast('Error', 'Could not identify the trip. Redirecting...', 'error');
+        }
+        setTimeout(() => { window.location.href = window.APP_ROOT + 'requester/dashboard.html'; }, 1500);
+        return;
+      }
+      const comment = document.getElementById('ratingComment') ? document.getElementById('ratingComment').value.trim() : '';
+      const btn = document.getElementById('submitRatingBtn');
+      if (btn) { btn.disabled = true; btn.innerHTML = '<span class="material-symbols-outlined inline-icon">progress_activity</span> Submitting...';
+}
+      
+      try {
+        const result = await apiFetch(window.APP_ROOT + 'api/request/rate.php', {
+          method: 'POST',
+          headers: {'Content-Type':'application/json'},
+          body: JSON.stringify({
+            dispatch_id: dispatchId,
+            role: 'requester',
+            rating: selectedRating,
+            comment: comment
+          })
+        });
+        
+        if (result && result.success) {
+          if (typeof showToast === 'function') {
+            showToast('Thank You', 'Your feedback has been submitted.', 'success');
+          }
+        } else {
+          if (typeof showToast === 'function') {
+            showToast('Notice', 'Rating could not be saved, but your trip is complete.', 'warning');
+          }
+        }
+      } catch(e) {
+        // Network error â€” still redirect
+        if (typeof showToast === 'function') {
+          showToast('Notice', 'Network issue â€” rating may not have been saved.', 'warning');
+        }
+      }
+      
+      if (btn) { btn.innerHTML = '<span class="material-symbols-outlined inline-icon">check</span> Redirecting to dashboard...';
+}
+      setTimeout(() => { window.location.href = window.APP_ROOT + 'requester/dashboard.html'; }, 2000);
+    };
+    
+      window.skipRating = function() {
+        document.getElementById('app').innerHTML =
+          renderSidebar('requester', 'navigation.html') +
+          '<div class="main-area">' + renderTopbar([]) +
+          '<div class="content"><div class="confirm-screen"><div class="text-center">' +
+            '<div class="confirm-icon"><span class="material-symbols-outlined inline-icon">home</span></div>' +
+            '<h2 class="font-bold" style="font-size:20px;">Redirecting to dashboard...</h2>' +
+          '</div></div></div></div>';
+setTimeout(() => { window.location.href = window.APP_ROOT + 'requester/dashboard.html'; }, 2000);
+      };
+    
+    function renderRatingUI() {
+      if (document.getElementById('ratingContainer')) return;
+      window.ratingUIActive = true;
+      clearInterval(window.trackingIntervalId);
+      
+      const ratingHtml = `
+      <div id="ratingContainer" class="card card-padded" style="max-width:500px;margin:40px auto;text-align:center;">
+        <div class="confirm-icon" style="margin:0 auto 16px auto;"><span class="material-symbols-outlined inline-icon">check</span></div>
+        <h2 class="font-bold" style="font-size:24px;margin-bottom:8px;">Trip Completed</h2>
+        <p class="text-muted text-sm" style="margin-bottom:24px;">You have safely arrived at your destination. Please rate your experience with the driver.</p>
+        
+        <div class="rating-stars" style="font-size:48px;cursor:pointer;user-select:none;margin-bottom:16px;display:flex;justify-content:center;gap:4px;">
+          <span id="star_1" onclick="setRating(1)" class="material-symbols-outlined" style="color:#fbbf24; font-size:inherit; font-variation-settings: 'FILL' 1;">star</span>
+          <span id="star_2" onclick="setRating(2)" class="material-symbols-outlined" style="color:#fbbf24; font-size:inherit; font-variation-settings: 'FILL' 1;">star</span>
+          <span id="star_3" onclick="setRating(3)" class="material-symbols-outlined" style="color:#fbbf24; font-size:inherit; font-variation-settings: 'FILL' 1;">star</span>
+          <span id="star_4" onclick="setRating(4)" class="material-symbols-outlined" style="color:#fbbf24; font-size:inherit; font-variation-settings: 'FILL' 1;">star</span>
+          <span id="star_5" onclick="setRating(5)" class="material-symbols-outlined" style="color:#fbbf24; font-size:inherit; font-variation-settings: 'FILL' 1;">star</span>
+        </div>
+        
+        <textarea id="ratingComment" class="form-textarea" style="margin-bottom:16px;" placeholder="Optional comments about the driver..." rows="3"></textarea>
+        
+        <button id="submitRatingBtn" class="btn btn-emergency btn-full" style="margin-bottom:12px;" onclick="submitRating()">Submit Rating</button>
+        <button class="btn btn-ghost btn-full" onclick="skipRating()">Skip</button>
+      </div>`;
+      
+      document.getElementById('app').innerHTML =
+        renderSidebar('requester', 'navigation.html') +
+        '<div class="main-area">' + renderTopbar([]) +
+        '<div class="content">' + ratingHtml + '</div></div>';
+}
+    
+  </script>
+</body>
+
+</html>
+

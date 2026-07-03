@@ -1,0 +1,401 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>AidFleet - Emergency Form</title>
+  <link rel="stylesheet" href="../css/style.css">
+  
+<link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:opsz,wght,FILL,GRAD@20..48,100..700,0..1,-50..200" rel="stylesheet" />
+</head>
+<body>
+  <div class="app-layout" id="app"></div>
+  <script>
+    // Initialize routing base
+    window.APP_ROOT = "../";
+  </script>
+  <script src="../js/data.js"></script>
+  <script>
+    (async () => {
+      const user = await requireAuth(['requester']);
+      if (!user) return;
+
+      const emergencyTypes = ['Road Accident','Medical Emergency','Fire Injury','Assault/Violence','Drowning','Collapse/Unconscious','Pregnancy/Labour','Other'];
+      let currentStep = 'form';
+      let userLocation = null;
+      let selectedDriverId = null;
+      let availableDrivers = [];
+      let requestId = null;
+      let formData = null;
+
+      // If there is an incomplete emergency with dispatch activity, resume on navigation page.
+      try {
+        const openDriverSelectEarly = sessionStorage.getItem('aidfleet_open_driver_select');
+        if (openDriverSelectEarly !== '1') {
+          const activeRes = await apiFetch(window.APP_ROOT + 'api/request/active.php');
+          const active = activeRes && activeRes.request ? activeRes.request : null;
+          if (active) {
+            window.location.href = 'navigation.html';
+            return;
+          }
+        }
+
+        const openDriverSelect = sessionStorage.getItem('aidfleet_open_driver_select');
+        if (openDriverSelect === '1') {
+          sessionStorage.removeItem('aidfleet_open_driver_select');
+          let listRes = await apiFetch(window.APP_ROOT + 'api/request/list.php');
+          let all = (listRes && listRes.requests) ? listRes.requests : [];
+          let resumeReq = all.find(r =>
+            r.request_status === 'pending' &&
+            (!r.dispatch_id || !r.dispatch_status || r.dispatch_status === 'rejected')
+          );
+          if (!resumeReq) {
+            const reopenRes = await apiFetch(window.APP_ROOT + 'api/request/reopen.php', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({}),
+            });
+            if (reopenRes && reopenRes.success && reopenRes.request_id) {
+              listRes = await apiFetch(window.APP_ROOT + 'api/request/list.php');
+              all = (listRes && listRes.requests) ? listRes.requests : [];
+              resumeReq = all.find(r => String(r.request_id) === String(reopenRes.request_id));
+            }
+          }
+          if (resumeReq) {
+            requestId = resumeReq.request_id;
+            userLocation = { lat: parseFloat(resumeReq.lat), lng: parseFloat(resumeReq.lng) };
+            formData = {
+              type: resumeReq.emergency_type,
+              desc: resumeReq.description,
+              addr: resumeReq.location,
+            };
+            const driversRes = await apiFetch(window.APP_ROOT + 'api/drivers/available.php?lat=' + encodeURIComponent(userLocation.lat) + '&lng=' + encodeURIComponent(userLocation.lng));
+            availableDrivers = (driversRes && driversRes.drivers) ? driversRes.drivers : [];
+            currentStep = 'select_driver';
+          }
+        } else {
+          const listRes = await apiFetch(window.APP_ROOT + 'api/request/list.php');
+          const all = (listRes && listRes.requests) ? listRes.requests : [];
+          const pendingNoDispatch = all.find(r => r.request_status === 'pending' && !r.dispatch_id);
+          if (pendingNoDispatch) {
+            requestId = pendingNoDispatch.request_id;
+            userLocation = { lat: parseFloat(pendingNoDispatch.lat), lng: parseFloat(pendingNoDispatch.lng) };
+            formData = {
+              type: pendingNoDispatch.emergency_type,
+              desc: pendingNoDispatch.description,
+              addr: pendingNoDispatch.location,
+            };
+            const driversRes = await apiFetch(window.APP_ROOT + 'api/drivers/available.php?lat=' + encodeURIComponent(userLocation.lat) + '&lng=' + encodeURIComponent(userLocation.lng));
+            availableDrivers = (driversRes && driversRes.drivers) ? driversRes.drivers : [];
+            currentStep = 'select_driver';
+          } else {
+             const sType = sessionStorage.getItem('temp_emergency_type');
+             if (sType) {
+               formData = {
+                 type: sType,
+                 desc: sessionStorage.getItem('temp_emergency_desc') || '',
+                 addr: sessionStorage.getItem('temp_emergency_addr') || ''
+               };
+               sessionStorage.removeItem('temp_emergency_type');
+               sessionStorage.removeItem('temp_emergency_desc');
+               sessionStorage.removeItem('temp_emergency_addr');
+             }
+          }
+        }
+      } catch (e) {
+        // Fail silently; user can always start a fresh request.
+      }
+
+      function render() {
+        const isForm = currentStep === 'form';
+        const isConfirmed = currentStep === 'confirmed';
+        if (isConfirmed) {
+          document.getElementById('app').innerHTML =
+            renderSidebar('requester', 'emergency-form.html') +
+            '<div class="main-area">' + renderTopbar([]) +
+            '<div class="content"><div class="confirm-screen"><div class="text-center">' +
+              '<div class="confirm-icon"><span class="material-symbols-outlined inline-icon">check</span></div>' +
+              '<h2 class="font-bold" style="font-size:20px;">Request Sent!</h2>' +
+              '<p class="text-sm text-muted mt-2">Driver has been notified. Redirecting to tracking...</p>' +
+            '</div></div></div></div>';
+          setTimeout(() => window.location.href = 'navigation.html', 1500);
+          return;
+        }
+
+        let stepIndicator = '<div class="step-indicator">' +
+          '<div class="step-circle ' + (isForm ? 'step-active' : 'step-done') + '">1</div>' +
+          '<div class="step-line ' + (!isForm ? 'step-line-active' : 'step-line-inactive') + '"></div>' +
+          '<div class="step-circle ' + (!isForm ? 'step-active' : 'step-inactive') + '">2</div></div>';
+
+        let body = '';
+        if (isForm) {
+          const currentType = formData ? formData.type : '';
+          const currentDesc = formData ? formData.desc : '';
+          const currentAddr = formData ? formData.addr : '';
+          let typeOptions = '<option value="">Select type...</option>' +
+            emergencyTypes.map(t => '<option value="'+escapeAttr(t)+'"'+(currentType === t ? ' selected' : '')+'>'+escapeHtml(t)+'</option>').join('');
+          body = '<form id="emergencyForm" class="space-y-4">' +
+            '<div class="form-group" style="margin-top:0;"><label>Emergency Type</label><select id="eType" class="form-select">' + typeOptions + '</select></div>' +
+            '<div class="form-group"><label>Description</label><textarea id="eDesc" class="form-textarea" rows="3" maxlength="500" placeholder="Describe the emergency situation...">'+ escapeHtml(currentDesc || '') +'</textarea></div>' +
+            '<div class="form-group"><label>Address / Location</label><input type="text" id="eAddr" class="form-input" placeholder="Enter your location or address" value="'+ escapeAttr(currentAddr || '') +'"></div>' +
+            '<button type="button" id="locBtn" class="location-btn' + (userLocation ? ' captured' : '') + '" onclick="captureLocation()"><span class="material-symbols-outlined inline-icon">location_on</span> ' + (userLocation ? 'Location captured: ' + userLocation.lat.toFixed(4) + ', ' + userLocation.lng.toFixed(4) : 'Capture GPS Location') + '</button>' +
+            '<div id="formError" class="alert-transparent-error" style="display:none;"></div>' +
+            '<div class="flex-row gap-3" style="margin-top:12px;"><button type="button" class="btn btn-outline btn-flex" style="flex:1;" onclick="clearFields()"><span class="material-symbols-outlined inline-icon">delete</span><span>Clear Fields</span></button>' +
+            '<button type="submit" class="btn btn-emergency btn-flex" style="flex:2;"><span class="material-symbols-outlined inline-icon">warning</span><span>Find Available Drivers</span></button></div>' +
+            '</form>';
+        } else {
+          // Driver selection (distance sorted by API)
+          let driverCards = '';
+          if (availableDrivers.length === 0) {
+            driverCards = '<div class="card card-padded text-center">' +
+              '<p class="text-muted mb-3">No available drivers at the moment.</p>' +
+              '<button id="refreshBtn" class="btn btn-outline" onclick="refreshDrivers()"><span class="material-symbols-outlined inline-icon">refresh</span> Refresh Search</button>' +
+              '</div>';
+          } else {
+            availableDrivers.forEach(d => {
+              const id = Number.parseInt(d.driver_id, 10);
+              if (!Number.isFinite(id)) return;
+              const dist = Number(d.distance_km || 0);
+              const finalAvatarSrc = d.profile_image ? safeAssetUrl(d.profile_image) : '';
+              const avatarImg = finalAvatarSrc ? '<img src="'+escapeAttr(finalAvatarSrc)+'" alt="" style="width:100%;height:100%;border-radius:50%;object-fit:cover;">' : escapeHtml(d.full_name ? d.full_name.charAt(0) : '?');
+              const ratingDisplay = d.avg_rating !== undefined ? '<span style="color:#fbbf24;font-size:12px;margin-left:6px;">★ ' + Number(d.avg_rating).toFixed(1) + '</span>' : '';
+
+              driverCards += '<div class="driver-card ' + (selectedDriverId === id ? 'selected' : '') + '" onclick="selectDriver(' + id + ')">' +
+                '<div class="driver-card-inner">' +
+                  '<div class="flex-row gap-3"><div class="driver-avatar" style="overflow:hidden;">' + avatarImg + '</div>' +
+                  '<div><p class="font-bold">' + escapeHtml(d.full_name || 'Driver') + ratingDisplay + '</p><p class="text-xs text-muted">' + escapeHtml(d.ambulance_type || 'Ambulance') + ' • ' + escapeHtml((d.ambulance_registration || '').toUpperCase()) + '</p>' +
+                  '</div></div>' +
+                  '<div class="driver-distance"><p class="km">' + dist.toFixed(1) + ' km</p><p class="eta">~' + Math.ceil(dist * 3) + ' min</p></div>' +
+                '</div></div>';
+            });
+          }
+
+          // Always show a Refresh button at the top when drivers are listed
+          const refreshBar = availableDrivers.length > 0
+            ? '<div style="text-align:right;margin-bottom:10px;"><button id="refreshBtn" class="btn btn-outline btn-sm" onclick="refreshDrivers()"><span class="material-symbols-outlined inline-icon">refresh</span> Refresh</button></div>'
+            : '';
+
+          let confirmBtn = selectedDriverId ? '<button class="btn btn-emergency btn-full" onclick="confirmDispatch()"><span class="material-symbols-outlined inline-icon">emergency_share</span> Confirm &amp; Dispatch</button>' : '';
+          body = '<button class="back-link" onclick="goBack()"><span class="material-symbols-outlined">arrow_back</span> Back to form</button>' +
+            refreshBar +
+            '<div class="space-y-3 mt-3 mb-4">' + driverCards + '</div>' +
+            '<div id="selectError" style="display:none; color: var(--emergency); text-align: center; margin-bottom: 12px; font-weight: 500;"></div>' +
+            '<div id="selectRefreshContainer" style="display:none; margin-bottom: 16px;"><button class="btn btn-outline btn-full" onclick="refreshDrivers()"><span class="material-symbols-outlined inline-icon">refresh</span> Refresh Search</button></div>' +
+            confirmBtn +
+            (requestId ? '<button class="btn btn-outline-destructive btn-full mt-3" onclick="cancelRequest()">Cancel emergency request</button>' : '');
+        }
+
+        document.getElementById('app').innerHTML =
+          renderSidebar('requester', 'emergency-form.html') +
+          '<div class="main-area">' + renderTopbar([]) +
+          '<div class="content"><div style="max-width:640px;margin:0 auto;" class="space-y-6">' +
+            '<button class="back-link" onclick="saveAndGoBackDashboard()"><span class="material-symbols-outlined">arrow_back</span> Back to Dashboard</button>' +
+            '<div><h1 class="page-title" style="margin-top:12px;">' + (isForm ? 'Report Emergency' : 'Select a Driver') + '</h1>' +
+            '<p class="page-subtitle">' + (isForm ? 'Fill in emergency details' : 'Choose the nearest available ambulance') + '</p></div>' +
+            stepIndicator + body +
+          '</div></div></div>';
+
+        if (isForm) {
+          document.getElementById('emergencyForm').addEventListener('submit', async function(e) {
+            e.preventDefault();
+            const type = document.getElementById('eType').value;
+            const desc = document.getElementById('eDesc').value.trim();
+            const addr = document.getElementById('eAddr').value.trim();
+            const err = document.getElementById('formError');
+            err.style.display = 'none';
+            err.classList.remove('shake');
+            void err.offsetWidth; // trigger reflow to restart animation
+            if (!type || !desc || !addr) { err.textContent = 'Please fill all fields'; err.style.display = 'block'; err.classList.add('shake'); return; }
+            if (!userLocation) { err.textContent = 'Please capture your location'; err.style.display = 'block'; err.classList.add('shake'); return; }
+
+            // Reject descriptions that are only digits and/or punctuation (no real words)
+            const descStripped = desc.replace(/[\d\s!"#$%&'()*+,\-./:;<=>?@[\\\]^_`{|}~]/g, '');
+            if (descStripped.length === 0) {
+              err.textContent = 'The description must be valid';
+              err.style.display = 'block';
+              err.classList.add('shake');
+              return;
+            }
+
+            formData = { type, desc, addr };
+            const createRes = await apiFetch(window.APP_ROOT + 'api/request/create.php', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({
+                emergency_type: type,
+                location: addr,
+                lat: userLocation.lat,
+                lng: userLocation.lng,
+                description: desc,
+              }),
+            });
+            if (!createRes.success) {
+              err.textContent = createRes.message || 'Could not create request';
+              err.style.display = 'block';
+              err.classList.add('shake');
+              return;
+            }
+            requestId = createRes.request_id;
+
+            const driversRes = await apiFetch(window.APP_ROOT + 'api/drivers/available.php?lat=' + encodeURIComponent(userLocation.lat) + '&lng=' + encodeURIComponent(userLocation.lng));
+            availableDrivers = (driversRes && driversRes.drivers) ? driversRes.drivers : [];
+
+            if (availableDrivers.length === 0) {
+              if (typeof showToast === 'function') {
+                showToast('No Drivers', 'No drivers are currently available. Please try refreshing the search.', 'warning');
+              }
+            }
+            currentStep = 'select_driver';
+            render();
+          });
+        }
+      }
+
+      window.refreshDrivers = async function() {
+        if (!userLocation) return;
+        const btn = document.getElementById('refreshBtn');
+        if (btn) {
+          btn.innerHTML = '<span class="material-symbols-outlined inline-icon">progress_activity</span> Searching...';
+          btn.disabled = true;
+        }
+
+        // Ensure UI shows searching for at least a brief moment so user knows it worked
+        const fetchPromise = apiFetch(window.APP_ROOT + 'api/drivers/available.php?lat=' + encodeURIComponent(userLocation.lat) + '&lng=' + encodeURIComponent(userLocation.lng));
+        const delayPromise = new Promise(resolve => setTimeout(resolve, 800));
+        const [res] = await Promise.all([fetchPromise, delayPromise]);
+        availableDrivers = (res && res.drivers) ? res.drivers : [];
+        if (availableDrivers.length === 0) {
+          if (typeof showToast === 'function') {
+            showToast('Still No Drivers', 'No drivers are currently available.', 'warning');
+          }
+        }
+        render();
+      };
+
+      window.saveAndGoBackDashboard = function() {
+        const typeEl = document.getElementById('eType');
+        const descEl = document.getElementById('eDesc');
+        const addrEl = document.getElementById('eAddr');
+        if (typeEl && descEl && addrEl) {
+          sessionStorage.setItem('temp_emergency_type', typeEl.value);
+          sessionStorage.setItem('temp_emergency_desc', descEl.value);
+          sessionStorage.setItem('temp_emergency_addr', addrEl.value);
+        } else if (formData) {
+          sessionStorage.setItem('temp_emergency_type', formData.type || '');
+          sessionStorage.setItem('temp_emergency_desc', formData.desc || '');
+          sessionStorage.setItem('temp_emergency_addr', formData.addr || '');
+        }
+        window.location.href = window.APP_ROOT + 'requester/dashboard.html';
+      };
+
+      window.captureLocation = function() {
+        // Preserve current form values before re-rendering
+        const typeEl = document.getElementById('eType');
+        const descEl = document.getElementById('eDesc');
+        const addrEl = document.getElementById('eAddr');
+        if (typeEl && descEl && addrEl) {
+          formData = {
+            type: typeEl.value,
+            desc: descEl.value.trim(),
+            addr: addrEl.value.trim(),
+          };
+        }
+        const locBtn = document.getElementById('locBtn');
+        if (locBtn) {
+          locBtn.innerHTML = '<span class="material-symbols-outlined inline-icon">location_on</span> Capturing location...';
+          locBtn.disabled = true;
+        }
+        if ('geolocation' in navigator) {
+          navigator.geolocation.getCurrentPosition(
+            function(position) {
+              userLocation = { lat: position.coords.latitude, lng: position.coords.longitude };
+              render();
+            },
+            function(error) {
+              if (locBtn) { locBtn.innerHTML = '<span class="material-symbols-outlined inline-icon">location_on</span> Capture GPS Location'; locBtn.disabled = false; }
+              let msg = error.message;
+              if (error.code === error.PERMISSION_DENIED && window.location.protocol !== 'https:' && window.location.hostname !== 'localhost') {
+                msg = 'Browser blocked GPS because the connection is not secure. You must use HTTPS or localhost to capture location.';
+              }
+              if (typeof showToast === 'function') {
+                showToast('GPS Error', 'Could not capture location: ' + msg + '. Please ensure location services are enabled.', 'error');
+              }
+            },
+            { enableHighAccuracy: true, timeout: 15000, maximumAge: 0 }
+          );
+        } else {
+          if (locBtn) { locBtn.innerHTML = '<span class="material-symbols-outlined inline-icon">location_on</span> Capture GPS Location'; locBtn.disabled = false; }
+          showToast('Not Supported', 'Geolocation is not supported by this browser.', 'error');
+        }
+      };
+
+      window.clearFields = function() {
+        formData = null;
+        userLocation = null;
+        render();
+      };
+
+      window.selectDriver = function(id) {
+        selectedDriverId = id;
+        render();
+      };
+
+      window.goBack = function() {
+        currentStep = 'form';
+        selectedDriverId = null;
+        render();
+      };
+
+      window.confirmDispatch = async function() {
+        if (!selectedDriverId || !requestId) return;
+        const err = document.getElementById('selectError');
+        if (err) {
+          err.style.display = 'none';
+          err.classList.remove('shake');
+        }
+        document.getElementById('selectRefreshContainer').style.display = 'none';
+
+        const res = await apiFetch(window.APP_ROOT + 'api/dispatch/select.php', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ request_id: requestId, driver_id: selectedDriverId }),
+        });
+        if (!res.success) {
+          if (err) {
+            void err.offsetWidth; // trigger reflow
+            err.textContent = res.message || 'Could not dispatch';
+            err.style.display = 'block';
+            err.classList.add('shake');
+          }
+          if (res.message && res.message.toLowerCase().includes('not available')) {
+            document.getElementById('selectRefreshContainer').style.display = 'block';
+          }
+          return;
+        }
+        formData = null;
+        userLocation = null;
+        selectedDriverId = null;
+        sessionStorage.removeItem('temp_emergency_type');
+        sessionStorage.removeItem('temp_emergency_desc');
+        sessionStorage.removeItem('temp_emergency_addr');
+        currentStep = 'confirmed';
+        render();
+      };
+
+      window.cancelRequest = async function() {
+        if (!requestId) return;
+        const res = await apiFetch(window.APP_ROOT + 'api/request/cancel.php', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ request_id: requestId }),
+        });
+        if (res && res.success) {
+          window.location.href = window.APP_ROOT + 'requester/dashboard.html';
+        }
+      };
+
+      render();
+    })();
+  </script>
+</body>
+</html>

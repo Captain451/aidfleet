@@ -1,0 +1,71 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>AidFleet - Dispatch Monitoring</title>
+  <link rel="stylesheet" href="../css/style.css">
+  
+<link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:opsz,wght,FILL,GRAD@20..48,100..700,0..1,-50..200" rel="stylesheet" />
+</head>
+<body>
+  <div class="app-layout" id="app"></div>
+  <script>
+    // Initialize routing base
+    window.APP_ROOT = "../";
+  </script>
+  <script src="../js/data.js"></script>
+  <script>
+    (async () => {
+      const user = await requireAuth(['admin']);
+      if (!user) return;
+
+      const res = await apiFetch(window.APP_ROOT + 'api/admin/dispatches.php');
+      const allDispatches = (res && res.dispatches) ? res.dispatches : [];
+      const activeDispatches = allDispatches.filter(d => !['completed','cancelled'].includes(d.request_status) && ['selected','accepted'].includes(d.dispatch_status));
+
+      let activeCards = '';
+      if (activeDispatches.length > 0) {
+        activeDispatches.forEach(d => {
+          activeCards += '<div class="emergency-active-card">' +
+            '<div class="flex-row gap-2"><h4 class="font-bold">' + escapeHtml(d.emergency_type || 'Emergency') + '</h4> ' + getStatusBadge(d.request_status) + '</div>' +
+            '<p class="text-sm text-muted mt-1"><span class="material-symbols-outlined inline-icon">location_on</span> ' + escapeHtml(d.location || '') + '</p>' +
+            '<div class="flex-row gap-4 mt-2 text-xs text-muted">' +
+              '<span><span class="material-symbols-outlined inline-icon">person</span> ' + escapeHtml(d.requester_name || '') + '</span>' +
+              '<span><span class="material-symbols-outlined inline-icon">phone</span> ' + escapeHtml(d.requester_phone || '') + '</span>' +
+              '<span><span class="material-symbols-outlined inline-icon">schedule</span> ' + new Date(d.dispatch_time).toLocaleTimeString() + '</span>' +
+            '</div>' +
+            (d.driver_name ? '<p class="text-sm mt-2">Assigned: <strong>' + escapeHtml(d.driver_name) + '</strong> (' + escapeHtml((d.ambulance_registration || '').toUpperCase()) + ')</p>' : '') +
+          '</div>';
+        });
+      }
+
+      let activeSection = activeDispatches.length > 0
+        ? '<div><h3 class="section-title section-title-flex mb-3"><span style="color:var(--emergency);"><span class="material-symbols-outlined inline-icon">radio</span></span> Active Dispatches (' + activeDispatches.length + ')</h3><div class="space-y-3">' + activeCards + '</div></div>'
+        : '<div class="card card-padded text-center"><p class="text-muted">No active dispatches.</p></div>';
+
+      let tableRows = '';
+      allDispatches.forEach(d => {
+        tableRows += '<tr><td class="font-medium">' + escapeHtml(d.emergency_type || 'Emergency') + '</td>' +
+          '<td class="text-muted">' + escapeHtml(d.requester_name || '') + '</td>' +
+          '<td class="text-muted">' + escapeHtml(d.driver_name || '—') + '</td>' +
+          '<td>' + getStatusBadge(d.request_status) + '</td>' +
+          '<td class="text-muted">' + escapeHtml(d.dispatch_status || '') + '</td>' +
+          '<td class="text-muted">' + new Date(d.dispatch_time).toLocaleString() + '</td>' +
+          '<td class="text-muted">' + (d.completion_time ? new Date(d.completion_time).toLocaleString() : '—') + '</td></tr>';
+      });
+
+      document.getElementById('app').innerHTML =
+        renderSidebar('admin', 'dispatches.html') +
+        '<div class="main-area">' + renderTopbar([]) +
+        '<div class="content"><div class="space-y-6">' +
+          '<div><h1 class="page-title">Dispatch Monitoring</h1><p class="page-subtitle">Real-time emergency dispatch tracking</p></div>' +
+          activeSection +
+          '<div class="card"><div class="card-header"><h3>All Dispatches</h3></div>' +
+            '<div style="overflow-x:auto;"><table><thead><tr><th>Emergency</th><th>Requester</th><th>Driver</th><th>Request Status</th><th>Dispatch Status</th><th>Start Time</th><th>Completed Time</th></tr></thead>' +
+            '<tbody>' + tableRows + '</tbody></table></div></div>' +
+        '</div></div></div>';
+})();
+  </script>
+</body>
+</html>

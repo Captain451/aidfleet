@@ -1,0 +1,832 @@
+﻿<!DOCTYPE html>
+<html lang="en">
+
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>AidFleet - Driver Navigation</title>
+  <link rel="stylesheet" href="../css/style.css?v=3">
+  
+  <style>
+    @media (min-width: 1024px) {
+      .nav-desktop-grid {
+        display: grid;
+        grid-template-columns: 1fr 340px;
+        gap: 20px;
+        align-items: start;
+      }
+      #navMap { height: calc(100vh - 210px) !important; min-height: 450px; }
+    }
+  </style>
+<link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:opsz,wght,FILL,GRAD@20..48,100..700,0..1,-50..200" rel="stylesheet" />
+</head>
+
+<body>
+  <div class="app-layout" id="app"></div>
+
+  <!-- Custom Confirm Arrival Modal -->
+  <div id="arriveModal" class="modal-overlay" style="display:none;position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(0,0,0,0.5);z-index:9999;align-items:center;justify-content:center;">
+    <div class="card card-padded" style="max-width:400px;width:100%;margin:20px;background:#fff;">
+      <div style="text-align:center;margin-bottom:16px;"><span style="font-size:40px;"><span class="material-symbols-outlined inline-icon">location_on</span></span></div>
+      <h2 class="font-bold text-lg mb-2 text-center">Confirm Arrival</h2>
+      <p class="text-muted text-sm text-center" style="margin-bottom:24px;">Are you sure you have arrived at the patient's location?</p>
+      <div class="flex-row gap-3">
+        <button class="btn btn-outline" style="flex:1;" onclick="document.getElementById('arriveModal').style.display='none'">Cancel</button>
+        <button class="btn btn-success" style="flex:1;" onclick="confirmArrived()">Yes, I'm here</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Custom Confirm Completion Modal -->
+  <div id="completeModal" class="modal-overlay" style="display:none;position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(0,0,0,0.5);z-index:9999;align-items:center;justify-content:center;">
+    <div class="card card-padded" style="max-width:400px;width:100%;margin:20px;background:#fff;">
+      <div style="text-align:center;margin-bottom:16px;"><span style="font-size:40px;"><span class="material-symbols-outlined inline-icon">flag</span></span></div>
+      <h2 class="font-bold text-lg mb-2 text-center">Complete Emergency</h2>
+      <p class="text-muted text-sm text-center" style="margin-bottom:24px;">Are you sure you want to mark this dispatch as successfully completed? This will set your status back to Available.</p>
+      <div class="flex-row gap-3">
+        <button class="btn btn-outline" style="flex:1;" onclick="document.getElementById('completeModal').style.display='none'">Cancel</button>
+        <button class="btn btn-success" style="flex:1;" onclick="confirmComplete()">Complete</button>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    // Initialize routing base
+    window.APP_ROOT = "../";
+  </script>
+  <script src="../js/data.js"></script>
+  <script src="../js/maps-integration.js"></script>
+  <script>
+    (async () => {
+      const user = await requireAuth(['driver']);
+      if (!user) return;
+
+      let driver = null;
+      let dispatch = null;
+      let watchId = null;
+      let driverMarker = null;
+      let destMarker = null;
+      let isMapInitialized = false;
+      let lastBackendUpdate = 0;
+      let lastEtaUpdate = 0;
+      let isAutoCentering = true;
+
+      let selectedHospital = null;
+
+      let isChangingHospital = false;
+      let showCancelForm = false;
+      let cancelReasonDraft = '';
+
+      window.recenterMap = function() {
+        isAutoCentering = true;
+        if (driverMarker && AidFleetMaps.map) {
+          const ll = driverMarker.getLatLng();
+          AidFleetMaps.map.panTo({ lat: ll.lat, lng: ll.lng });
+        }
+      };
+
+      async function loadData() {
+        const prof = await apiFetch(window.APP_ROOT + 'api/driver/profile.php');
+        driver = prof && prof.driver ? prof.driver : null;
+        const dRes = await apiFetch(window.APP_ROOT + 'api/driver/active_dispatch.php');
+        dispatch = dRes && dRes.dispatch ? dRes.dispatch : null;
+      }
+
+      function getCancelFormHtml() {
+        return '<div class="card card-padded" style="width:100%;grid-column:1/-1;">' +
+          '<label class="text-sm font-medium">Cancellation reason (optional)</label>' +
+          '<textarea id="cancelReason" class="form-textarea" rows="2" placeholder="Briefly explain why you are cancelling this response...">' + escapeHtml(cancelReasonDraft || '') + '</textarea>' +
+          '<div class="flex-row gap-3 mt-2">' +
+            '<button class="btn btn-outline-destructive btn-sm" style="flex:1;" onclick="submitCancelTrip()">Confirm Cancel</button>' +
+            '<button class="btn btn-sm" style="flex:1;" onclick="closeCancelForm()">Back</button>' +
+          '</div>' +
+        '</div>';
+      }
+
+      function getActionButtonsHtml() {
+        if (!dispatch) return '';
+        if (showCancelForm && ['accepted', 'arrived', 'enroute_hospital'].includes(dispatch.dispatch_status)) {
+          return getCancelFormHtml();
+        }
+        if (dispatch.dispatch_status === 'selected') {
+          return '<button class="btn btn-emergency btn-full" onclick="window.location.href=\'dashboard.html\'">Respond to Dispatch</button>';
+        }
+        if (dispatch.dispatch_status === 'accepted') {
+          return '<button class="btn btn-info" onclick="openGoogleMapsApp()"><span class="material-symbols-outlined inline-icon">explore</span> Open App</button>' +
+                 '<button class="btn btn-success" onclick="markArrived()"><span class="material-symbols-outlined inline-icon">check_circle</span> Mark as Arrived</button>' +
+                 '<button class="btn btn-outline-destructive" onclick="openCancelForm()"><span class="material-symbols-outlined inline-icon">cancel</span> Cancel Response</button>';
+        }
+        if (dispatch.dispatch_status === 'arrived') {
+          return '<button class="btn btn-success btn-full" id="btnRouteHospital" onclick="routeToHospital()" disabled><span class="material-symbols-outlined inline-icon">apartment</span> Start Route to Hospital</button>' +
+                 '<button class="btn btn-outline-destructive btn-full mt-2" onclick="openCancelForm()"><span class="material-symbols-outlined inline-icon">cancel</span> Cancel Response</button>';
+        }
+        if (dispatch.dispatch_status === 'enroute_hospital') {
+          return '<button class="btn btn-outline" onclick="changeHospital()"><span class="material-symbols-outlined inline-icon">swap_horiz</span> Change Hospital</button>' +
+                 '<button class="btn btn-info" onclick="openGoogleMapsAppHospital()"><span class="material-symbols-outlined inline-icon">explore</span> Open App</button>' +
+                 '<button class="btn btn-success" onclick="completeDispatch()"><span class="material-symbols-outlined inline-icon">flag</span> Mark as Complete</button>' +
+                 '<button class="btn btn-outline-destructive" onclick="openCancelForm()"><span class="material-symbols-outlined inline-icon">cancel</span> Cancel Response</button>';
+        }
+        return '';
+      }
+
+      function updateActionButtons() {
+        const actionContainer = document.querySelector('.nav-action-row');
+        if (actionContainer && dispatch) {
+          actionContainer.innerHTML = getActionButtonsHtml();
+        }
+      }
+
+      function renderSkeleton() {
+        if (!dispatch) {
+          document.getElementById('app').innerHTML =
+            renderSidebar('driver', 'navigation.html') +
+            '<div class="main-area">' + renderTopbar([]) +
+            '<div class="content"><div style="display:flex;align-items:center;justify-content:center;min-height:60vh;">' +
+            '<div class="nav-empty-state"><span class="material-symbols-outlined nav-empty-hazard">warning</span>' +
+            '<h2 class="font-bold" style="font-size:20px;">No Active Dispatch</h2>' +
+            '<p class="text-sm text-muted mt-2">You do not have any active emergency navigation at the moment.</p></div>' +
+            '</div></div></div>';
+return false;
+        }
+
+        let title = 'Navigation';
+        let subtitle = 'Route to emergency scene';
+        let hospitalLabel = '(Pending selection)';
+        let searchUi = '';
+        let etaText = 'Calculating...';
+
+        if (dispatch.dispatch_status === 'arrived') {
+          title = 'At Scene';
+          subtitle = 'Patient located. Select destination hospital.';
+          etaText = 'Please select a hospital';
+          searchUi = '<div class="card card-padded" style="margin-bottom:16px;position:relative;z-index:10001;">' +
+                     '<label class="form-label">Search Destination Hospital</label>' +
+                     '<input type="text" id="hospitalSearch" class="form-input" placeholder="Type hospital name..." />' +
+                     '<div id="hospitalRouteError" class="alert-inline-error shake" style="display:none;margin-top:8px;"></div>' +
+                     '</div>';
+        } else if (dispatch.dispatch_status === 'enroute_hospital') {
+          title = 'Navigating';
+          subtitle = 'En route to hospital';
+          hospitalLabel = dispatch.hospital_name || 'Hospital';
+        }
+
+        const driverPhone = (driver && driver.phone) ? driver.phone : '';
+        const requesterPhone = dispatch.requester_phone || '';
+        const contactCard = '<div class="card card-padded contact-card">' +
+          '<p class="text-xs text-muted contact-card-title">Contacts</p>' +
+          (requesterPhone ? '<p class="text-sm mt-2 contact-row"><span class="material-symbols-outlined inline-icon">phone</span><span>Requester: <strong>' + escapeHtml(requesterPhone) + '</strong></span></p>' : '') +
+          (driverPhone ? '<p class="text-sm mt-1 contact-row"><span class="material-symbols-outlined inline-icon">phone</span><span>You: <strong>' + escapeHtml(driverPhone) + '</strong></span></p>' : '') +
+          '</div>';
+
+        const actionButtons = getActionButtonsHtml();
+
+        document.getElementById('app').innerHTML =
+          renderSidebar('driver', 'navigation.html') +
+          '<div class="main-area">' + renderTopbar([]) +
+          '<div class="content"><div class="space-y-4">' +
+          '<div><h1 class="page-title">' + escapeHtml(title) + '</h1><p class="page-subtitle">' + escapeHtml(subtitle) + '</p></div>' +
+          '<div id="gpsWarning" class="alert-warning" style="display:none;"><span class="material-symbols-outlined inline-icon">warning</span> Awaiting GPS signal... Please ensure location services are enabled.</div>' +
+          '<div class="nav-desktop-grid">' +
+            // Left: map
+            '<div class="map-with-recenter">' +
+              '<div class="map-placeholder" id="navMap" style="height:380px;background:#f1f5f9;border-radius:8px;"></div>' +
+              '<button type="button" id="recenterBtn" class="recenter-map-btn" onclick="recenterMap()"><span class="material-symbols-outlined">my_location</span></button>' +
+            '</div>' +
+            // Right: ETA, route cards, search, buttons
+            '<div style="display:flex;flex-direction:column;gap:16px;">' +
+              '<div class="timer-bar"><span class="text-muted"><span class="material-symbols-outlined inline-icon">schedule</span> ETA:</span><span class="timer-value" id="etaVal">' + escapeHtml(etaText) + '</span></div>' +
+              searchUi +
+              '<div class="grid-2" style="position:relative;z-index:1;">' +
+                '<div class="route-card"><div class="route-icon route-icon-emergency"><span class="material-symbols-outlined inline-icon">location_on</span></div><div><p class="route-label">Pick-up Location</p><p class="route-value">' + escapeHtml(dispatch.location) + '</p></div></div>' +
+                '<div class="route-card"><div class="route-icon route-icon-success"><span class="material-symbols-outlined inline-icon">apartment</span></div><div><p class="route-label">Destination Hospital</p><p class="route-value" id="hospitalNameLabel">' + escapeHtml(hospitalLabel) + '</p></div></div>' +
+              '</div>' +
+              contactCard +
+              '<div class="nav-action-row">' + actionButtons + '</div>' +
+            '</div>' +
+          '</div>' +
+          '</div></div></div>';
+// Bind Google Places Autocomplete if we are in 'arrived' state
+        if (dispatch.dispatch_status === 'arrived') {
+          AidFleetMaps.loadMapLib(() => {
+            AidFleetMaps.initAutocomplete('hospitalSearch', (place) => {
+              selectedHospital = place;
+              document.getElementById('hospitalNameLabel').textContent = place.name;
+              document.getElementById('btnRouteHospital').removeAttribute('disabled');
+            });
+          });
+        }
+
+        return true;
+      }
+
+      window.openGoogleMapsApp = function () {
+        if (!dispatch) return;
+        let originParam = '';
+        if (driverMarker && typeof driverMarker.getLatLng === 'function') {
+          const ll = driverMarker.getLatLng();
+          originParam = '&origin=' + ll.lat + ',' + ll.lng;
+        }
+        const url = `https://www.google.com/maps/dir/?api=1${originParam}&destination=${dispatch.lat},${dispatch.lng}&travelmode=driving&dir_action=navigate`;
+        window.open(url, '_blank');
+      };
+      
+      window.openGoogleMapsAppHospital = function () {
+        if (!dispatch || !dispatch.hospital_lat) return;
+        let originParam = '';
+        if (driverMarker && typeof driverMarker.getLatLng === 'function') {
+          const ll = driverMarker.getLatLng();
+          originParam = `&origin=${ll.lat},${ll.lng}`;
+        }
+        const url = `https://www.google.com/maps/dir/?api=1${originParam}&destination=${dispatch.hospital_lat},${dispatch.hospital_lng}&travelmode=driving&dir_action=navigate`;
+        window.open(url, '_blank');
+      };
+
+      window.markArrived = function () {
+        if (!dispatch) return;
+        document.getElementById('arriveModal').style.display = 'flex';
+      };
+
+      window.confirmArrived = async function () {
+        document.getElementById('arriveModal').style.display = 'none';
+        
+        const res = await apiFetch(window.APP_ROOT + 'api/driver/update_status.php', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ dispatch_id: dispatch.dispatch_id, status: 'arrived' })
+        });
+        if (res.success) {
+          dispatch.dispatch_status = 'arrived';
+          
+          // DO NOT wipe the map, just update UI
+          const titleEl = document.querySelector('.page-title');
+          if (titleEl) titleEl.textContent = 'At Scene';
+          const subtitleEl = document.querySelector('.page-subtitle');
+          if (subtitleEl) subtitleEl.textContent = 'Patient located. Select destination hospital.';
+          const etaEl = document.getElementById('etaVal');
+          if (etaEl) etaEl.textContent = 'Please select a hospital';
+          const actionContainer = document.querySelector('.nav-action-row');
+          if (actionContainer) {
+            actionContainer.innerHTML = '<button class="btn btn-success btn-full" id="btnRouteHospital" onclick="routeToHospital()" disabled><span class="material-symbols-outlined inline-icon">apartment</span> Start Route to Hospital</button>';}
+          
+          // Inject search UI if not exists
+          let searchContainer = document.getElementById('hospitalSearchContainer');
+          if (!searchContainer) {
+            const navGrid = document.querySelector('.nav-desktop-grid > div:nth-child(2)');
+            if (navGrid) {
+              searchContainer = document.createElement('div');
+              searchContainer.id = 'hospitalSearchContainer';
+              searchContainer.className = 'card card-padded';
+              searchContainer.style = 'margin-bottom:16px;position:relative;z-index:10001;';
+              searchContainer.innerHTML = '<label class="form-label">Search Destination Hospital</label>' +
+                                   '<input type="text" id="hospitalSearch" class="form-input" placeholder="Type hospital name..." />';
+              const timerBar = navGrid.querySelector('.timer-bar');
+              if (timerBar && timerBar.nextSibling) {
+                navGrid.insertBefore(searchContainer, timerBar.nextSibling);
+              }
+            }
+          } else {
+             searchContainer.style.display = 'block';
+             document.getElementById('hospitalSearch').value = '';
+          }
+          
+          AidFleetMaps.loadMapLib(() => {
+            AidFleetMaps.initAutocomplete('hospitalSearch', (place) => {
+              selectedHospital = place;
+              document.getElementById('hospitalNameLabel').textContent = place.name;
+              document.getElementById('btnRouteHospital').removeAttribute('disabled');
+            });
+          });
+          
+          if (typeof showToast === 'function') {
+            showToast('Arrived', 'You have arrived at the patient\'s location. Please select a hospital.', 'success');
+          }
+        } else { showToast('Error', res.message || 'Could not update status.', 'error'); }
+      };
+
+      window.routeToHospital = async function () {
+        if (!dispatch) return;
+        if (!selectedHospital) {
+          let errEl = document.getElementById('hospitalRouteError');
+          if (!errEl) {
+            const searchCard = document.querySelector('#hospitalSearch') ? document.querySelector('#hospitalSearch').closest('.card') : null;
+            if (searchCard) {
+              errEl = document.createElement('div');
+              errEl.id = 'hospitalRouteError';
+              errEl.className = 'alert-inline-error';
+              searchCard.appendChild(errEl);
+            }
+          }
+          if (errEl) {
+            errEl.textContent = 'Select destination hospital first';
+            errEl.style.display = 'block';
+            errEl.classList.remove('shake');
+            void errEl.offsetWidth;
+            errEl.classList.add('shake');
+          }
+          return;
+        }
+        const errEl = document.getElementById('hospitalRouteError');
+        if (errEl) errEl.style.display = 'none';
+
+        // Capture driver position BEFORE clearing markers
+        let lastLat = null, lastLng = null;
+        if (driverMarker && typeof driverMarker.getLatLng === 'function') {
+          const ll = driverMarker.getLatLng();
+          lastLat = ll.lat; lastLng = ll.lng;
+        }
+        // Fallback: if GPS hasn't fired yet, use the emergency scene location
+        // (the driver just arrived there, so it's a close approximation)
+        if (!lastLat || !lastLng) {
+          lastLat = parseFloat(dispatch.lat);
+          lastLng = parseFloat(dispatch.lng);
+        }
+
+        // Optimistic UI update: instantly render the new state before the API call finishes to prevent lag
+        dispatch.dispatch_status = 'enroute_hospital';
+        dispatch.hospital_name = selectedHospital.name;
+        dispatch.hospital_lat = selectedHospital.lat;
+        dispatch.hospital_lng = selectedHospital.lng;
+
+        // Update UI manually without destroying map
+        const titleEl = document.querySelector('.page-title');
+        if (titleEl) titleEl.textContent = 'Navigating';
+        const subtitleEl = document.querySelector('.page-subtitle');
+        if (subtitleEl) subtitleEl.textContent = 'En route to hospital';
+        
+        const hospitalNameEl = document.getElementById('hospitalNameLabel');
+        if (hospitalNameEl) hospitalNameEl.textContent = selectedHospital.name;
+        
+        const etaEl = document.getElementById('etaVal');
+        if (etaEl) etaEl.textContent = 'Calculating...';
+        
+        // Hide the search UI
+        const searchContainer = document.getElementById('hospitalSearchContainer');
+        if (searchContainer) searchContainer.style.display = 'none';
+        const oldSearchInput = document.getElementById('hospitalSearch');
+        if (oldSearchInput && oldSearchInput.closest('.card') && oldSearchInput.closest('.card').id !== 'hospitalSearchContainer') {
+           oldSearchInput.closest('.card').style.display = 'none';
+        }
+
+        // Update action buttons
+        const actionContainer = document.querySelector('.nav-action-row');
+        if (actionContainer) {
+          actionContainer.innerHTML = '<button class="btn btn-outline" style="flex:1;" onclick="changeHospital()"><span class="material-symbols-outlined inline-icon">swap_horiz</span> Change Hospital</button>' +
+                          '<button class="btn btn-info" style="flex:1;" onclick="openGoogleMapsAppHospital()"><span class="material-symbols-outlined inline-icon">explore</span> Open App</button>' +
+                          '<button class="btn btn-success" style="flex:1;" onclick="completeDispatch()"><span class="material-symbols-outlined inline-icon">flag</span> Mark as Complete</button>';}
+
+        // Instantly draw new route and update marker on existing map
+        AidFleetMaps._lastRouteKey = null;
+        if (destMarker && typeof destMarker.setMap === 'function') {
+            destMarker.setMap(null); // remove old requester marker
+        }
+        if (AidFleetMaps.map) {
+            destMarker = AidFleetMaps.createMarker(dispatch.hospital_lat, dispatch.hospital_lng, 'Hospital', 'hospital');
+            if (lastLat && lastLng) {
+                AidFleetMaps.drawRoute(lastLat, lastLng, dispatch.hospital_lat, dispatch.hospital_lng).then(function(routeData) {
+                    if (routeData && routeData.durationText) {
+                        if (etaEl && etaEl.textContent === 'Calculating...') {
+                            etaEl.textContent = routeData.durationText;
+                        }
+                    }
+                });
+            }
+        }
+        
+        lastEtaUpdate = 0; 
+        lastBackendUpdate = 0;
+        
+        if (!watchId) startTracking();
+
+        const res = await apiFetch(window.APP_ROOT + 'api/driver/update_status.php', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ 
+            dispatch_id: dispatch.dispatch_id, 
+            status: 'enroute_hospital',
+            hospital_name: selectedHospital.name,
+            hospital_lat: selectedHospital.lat,
+            hospital_lng: selectedHospital.lng
+          })
+        });
+        
+        if (res.success) {
+          if (typeof showToast === 'function') {
+            showToast('En Route', 'Navigating to ' + selectedHospital.name, 'info');
+          }
+        } else {
+          // Revert optimistic UI on failure
+          dispatch.dispatch_status = 'arrived';
+          dispatch.hospital_name = null;
+          dispatch.hospital_lat = null;
+          dispatch.hospital_lng = null;
+          selectedHospital = null;
+          isMapInitialized = false;
+          driverMarker = null;
+          destMarker = null;
+          renderSkeleton();
+          showToast('Error', res.message || 'Could not start route to hospital.', 'error');
+        }
+      };
+
+      window.cancelHospitalChange = function() {
+        if (!dispatch) return;
+        isChangingHospital = false;
+        selectedHospital = null;
+        const searchContainer = document.getElementById('hospitalSearchContainer');
+        if (searchContainer) searchContainer.style.display = 'none';
+        const actionContainer = document.querySelector('.nav-action-row');
+        if (actionContainer && dispatch.dispatch_status === 'enroute_hospital') {
+          actionContainer.innerHTML = '<button class="btn btn-outline" style="flex:1;" onclick="changeHospital()"><span class="material-symbols-outlined inline-icon">swap_horiz</span> Change Hospital</button>' +
+            '<button class="btn btn-info" style="flex:1;" onclick="openGoogleMapsAppHospital()"><span class="material-symbols-outlined inline-icon">explore</span> Open App</button>' +
+            '<button class="btn btn-success" style="flex:1;" onclick="completeDispatch()"><span class="material-symbols-outlined inline-icon">flag</span> Mark as Complete</button>';
+        }
+      };
+
+      window.changeHospital = function () {
+        if (!dispatch || dispatch.dispatch_status !== 'enroute_hospital') return;
+        isChangingHospital = true;
+        selectedHospital = null;
+
+        let searchContainer = document.getElementById('hospitalSearchContainer');
+        if (!searchContainer) {
+          const navGrid = document.querySelector('.nav-desktop-grid > div:last-child');
+          if (navGrid) {
+            searchContainer = document.createElement('div');
+            searchContainer.id = 'hospitalSearchContainer';
+            searchContainer.className = 'card card-padded';
+            searchContainer.style.cssText = 'margin-bottom:16px;position:relative;z-index:10001;';
+            searchContainer.innerHTML = '<label class="form-label">Search New Destination Hospital</label>' +
+              '<input type="text" id="hospitalSearch" class="form-input" placeholder="Type hospital name..." />';
+            const timerBar = navGrid.querySelector('.timer-bar');
+            if (timerBar && timerBar.nextSibling) {
+              navGrid.insertBefore(searchContainer, timerBar.nextSibling);
+            } else {
+              navGrid.prepend(searchContainer);
+            }
+          }
+        } else {
+          searchContainer.style.display = 'block';
+          const input = document.getElementById('hospitalSearch');
+          if (input) input.value = '';
+        }
+
+        const actionContainer = document.querySelector('.nav-action-row');
+        if (actionContainer) {
+          actionContainer.innerHTML =
+            '<button class="btn btn-outline" style="flex:1;" onclick="cancelHospitalChange()">Cancel</button>' +
+            '<button class="btn btn-success" style="flex:2;" id="btnConfirmHospital" onclick="confirmHospitalChange()" disabled><span class="material-symbols-outlined inline-icon">apartment</span> Confirm New Hospital</button>';
+        }
+
+        AidFleetMaps.loadMapLib(function() {
+          AidFleetMaps.initAutocomplete('hospitalSearch', function(place) {
+            selectedHospital = place;
+            const confirmBtn = document.getElementById('btnConfirmHospital');
+            if (confirmBtn) confirmBtn.removeAttribute('disabled');
+          });
+        });
+
+        if (typeof showToast === 'function') {
+          showToast('Change Hospital', 'Search and select a new hospital to update your route.', 'info');
+        }
+      };
+
+      window.confirmHospitalChange = async function() {
+        if (!selectedHospital) {
+          if (typeof showToast === 'function') {
+            showToast('Destination Required', 'Please search and select a hospital from the list first.', 'error');
+          }
+          return;
+        }
+        isChangingHospital = false;
+        await routeToHospital();
+        const searchContainer = document.getElementById('hospitalSearchContainer');
+        if (searchContainer) searchContainer.style.display = 'none';
+      };
+
+      window.openCancelForm = function() {
+        if (!dispatch) return;
+        showCancelForm = true;
+        updateActionButtons();
+      };
+
+      window.closeCancelForm = function() {
+        const textarea = document.getElementById('cancelReason');
+        if (textarea) cancelReasonDraft = textarea.value;
+        showCancelForm = false;
+        updateActionButtons();
+      };
+
+      window.submitCancelTrip = async function() {
+        if (!dispatch) return;
+        const textarea = document.getElementById('cancelReason');
+        const reason = textarea ? textarea.value.trim() : '';
+        const res = await apiFetch(window.APP_ROOT + 'api/driver/cancel_dispatch.php', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ dispatch_id: dispatch.dispatch_id, cancel_reason: reason }),
+        });
+        showCancelForm = false;
+        cancelReasonDraft = '';
+        if (res && res.success) {
+          const displayReason = reason || 'Unspecified';
+          if (watchId) { navigator.geolocation.clearWatch(watchId); watchId = null; }
+          window.isRedirectingToNav = true;
+          document.getElementById('app').innerHTML =
+            renderSidebar('driver', 'navigation.html') +
+            '<div class="main-area">' + renderTopbar([]) +
+            '<div class="content"><div class="confirm-screen"><div class="text-center">' +
+              '<div class="confirm-icon" style="background:var(--destructive,#ef4444);"><span class="material-symbols-outlined inline-icon">cancel</span></div>' +
+              '<h2 class="font-bold" style="font-size:20px;">Response Cancelled</h2>' +
+              '<p class="text-sm text-muted mt-2">Reason: ' + escapeHtml(displayReason) + '</p>' +
+              '<p class="text-sm text-muted mt-2">The requester has been notified. Redirecting...</p>' +
+            '</div></div></div></div>';
+          setTimeout(function() { window.location.href = 'dashboard.html'; }, 3500);
+        } else if (typeof showToast === 'function') {
+          showToast('Error', (res && res.message) || 'Could not cancel response.', 'error');
+          updateActionButtons();
+        }
+      };
+
+      window.cancelTripResponse = function() {
+        openCancelForm();
+      };
+
+      window.completeDispatch = function () {
+        if (!dispatch) return;
+        document.getElementById('completeModal').style.display = 'flex';
+      };
+
+      window.confirmComplete = async function () {
+        document.getElementById('completeModal').style.display = 'none';
+        
+        const res = await apiFetch(window.APP_ROOT + 'api/driver/complete_dispatch.php', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ dispatch_id: dispatch.dispatch_id }),
+        });
+        if (res.success) {
+          if (typeof showToast === 'function') {
+            showToast('Trip Completed', 'Emergency dispatch completed successfully.', 'success');
+          }
+          // Stop GPS tracking
+          if (watchId) { navigator.geolocation.clearWatch(watchId); watchId = null; }
+          
+          renderRatingUI();
+        } else { showToast('Error', res.message || 'Could not complete dispatch.', 'error'); }
+      };
+
+      // --- Rating System UI ---
+      let selectedRating = 5;
+      
+      window.setRating = function(val) {
+        selectedRating = val;
+        for (let i = 1; i <= 5; i++) {
+          const star = document.getElementById('star_' + i);
+          if (star) {
+            if (i <= val) {
+              star.style.color = '#fbbf24'; // Yellow
+              star.style.fontVariationSettings = "'FILL' 1";
+            } else {
+              star.style.color = '#cbd5e1'; // Gray
+              star.style.fontVariationSettings = "'FILL' 0";
+            }
+          }
+        }
+      };
+      
+      window.submitRating = async function() {
+        if (!dispatch) return skipRating();
+        const comment = document.getElementById('ratingComment') ? document.getElementById('ratingComment').value.trim() : '';
+        const btn = document.getElementById('submitRatingBtn');
+        if (btn) { btn.disabled = true; btn.innerHTML = '<span class="material-symbols-outlined inline-icon">progress_activity</span> Submitting...'; }
+        
+        await apiFetch(window.APP_ROOT + 'api/request/rate.php', {
+          method: 'POST',
+          headers: {'Content-Type':'application/json'},
+          body: JSON.stringify({
+            dispatch_id: dispatch.dispatch_id,
+            role: 'driver',
+            rating: selectedRating,
+            comment: comment
+          })
+        });
+        
+        if (typeof showToast === 'function') {
+          showToast('Thank You', 'Your feedback has been submitted.', 'success');
+        }
+        if (btn) { btn.innerHTML = '<span class="material-symbols-outlined inline-icon">check</span> Redirecting to dashboard...'; }
+        setTimeout(() => { window.location.href = window.APP_ROOT + 'driver/dashboard.html'; }, 2000);
+      };
+      
+      window.skipRating = function() {
+        document.getElementById('app').innerHTML =
+          renderSidebar('driver', 'navigation.html') +
+          '<div class="main-area">' + renderTopbar([]) +
+          '<div class="content"><div class="confirm-screen"><div class="text-center">' +
+            '<div class="confirm-icon"><span class="material-symbols-outlined inline-icon">home</span></div>' +
+            '<h2 class="font-bold" style="font-size:20px;">Redirecting to dashboard...</h2>' +
+          '</div></div></div></div>';
+        setTimeout(() => { window.location.href = window.APP_ROOT + 'driver/dashboard.html'; }, 2000);
+      };
+      
+      function renderRatingUI() {
+        window.isRatingState = true;
+        const ratingHtml = `
+        <div id="ratingContainer" class="card card-padded" style="max-width:500px;margin:40px auto;text-align:center;">
+          <div class="confirm-icon" style="margin:0 auto 16px auto;"><span class="material-symbols-outlined inline-icon">check</span></div>
+          <h2 class="font-bold" style="font-size:24px;margin-bottom:8px;">Trip Completed</h2>
+          <p class="text-muted text-sm mb-6">You have completed the dispatch. Please rate your experience with the requester.</p>
+          
+          <div class="rating-stars mb-4" style="font-size:48px;cursor:pointer;user-select:none;display:flex;justify-content:center;gap:4px;">
+            <span id="star_1" onclick="setRating(1)" class="material-symbols-outlined" style="color:#fbbf24; font-size:inherit; font-variation-settings: 'FILL' 1;">star</span>
+            <span id="star_2" onclick="setRating(2)" class="material-symbols-outlined" style="color:#fbbf24; font-size:inherit; font-variation-settings: 'FILL' 1;">star</span>
+            <span id="star_3" onclick="setRating(3)" class="material-symbols-outlined" style="color:#fbbf24; font-size:inherit; font-variation-settings: 'FILL' 1;">star</span>
+            <span id="star_4" onclick="setRating(4)" class="material-symbols-outlined" style="color:#fbbf24; font-size:inherit; font-variation-settings: 'FILL' 1;">star</span>
+            <span id="star_5" onclick="setRating(5)" class="material-symbols-outlined" style="color:#fbbf24; font-size:inherit; font-variation-settings: 'FILL' 1;">star</span>
+          </div>
+          
+          <textarea id="ratingComment" class="form-textarea mb-4" placeholder="Optional comments about the requester..." rows="3"></textarea>
+          
+          <button id="submitRatingBtn" class="btn btn-success btn-full mb-3" onclick="submitRating()">Submit Rating</button>
+          <button class="btn btn-ghost btn-full" onclick="skipRating()">Skip</button>
+        </div>`;
+        
+        document.getElementById('app').innerHTML =
+          renderSidebar('driver', 'navigation.html') +
+          '<div class="main-area">' + renderTopbar([]) +
+          '<div class="content">' + ratingHtml + '</div></div>';
+      }
+
+      function updateLocation(lat, lng) {
+        // Skip all processing when tab is hidden — saves backend and API calls
+        if (!AidFleetMaps.isPageActive()) return;
+
+        const gpsWarning = document.getElementById('gpsWarning');
+        if (gpsWarning) gpsWarning.style.display = 'none';
+
+        if (!isMapInitialized) {
+          // Initialize map centered on driver
+          AidFleetMaps.initMap('navMap', lat, lng, 16);
+          driverMarker = AidFleetMaps.createMarker(lat, lng, 'Ambulance', 'ambulance');
+
+          // Draw correct route based on status
+          if (dispatch.dispatch_status === 'accepted' || dispatch.dispatch_status === 'selected') {
+            if (dispatch.lat && dispatch.lng) {
+              destMarker = AidFleetMaps.createMarker(dispatch.lat, dispatch.lng, 'Emergency', 'requester');
+              AidFleetMaps.drawRoute(lat, lng, dispatch.lat, dispatch.lng).then(function(routeData) {
+                if (routeData && routeData.durationText) {
+                  var etaEl = document.getElementById('etaVal');
+                  if (etaEl && etaEl.textContent === 'Calculating...') {
+                    etaEl.textContent = routeData.durationText;
+                  }
+                }
+              });
+            }
+          } else if (dispatch.dispatch_status === 'enroute_hospital') {
+            if (dispatch.hospital_lat && dispatch.hospital_lng) {
+              destMarker = AidFleetMaps.createMarker(dispatch.hospital_lat, dispatch.hospital_lng, 'Hospital', 'hospital');
+              // Use Directions API route data for instant ETA (before Distance Matrix fires)
+              AidFleetMaps.drawRoute(lat, lng, dispatch.hospital_lat, dispatch.hospital_lng).then(function(routeData) {
+                if (routeData && routeData.durationText) {
+                  var etaEl = document.getElementById('etaVal');
+                  if (etaEl && etaEl.textContent === 'Calculating...') {
+                    etaEl.textContent = routeData.durationText;
+                  }
+                }
+              });
+            }
+          } else if (dispatch.dispatch_status === 'arrived') {
+            // At scene: just show ambulance and requester
+            if (dispatch.lat && dispatch.lng) {
+              destMarker = AidFleetMaps.createMarker(dispatch.lat, dispatch.lng, 'Emergency', 'requester');
+            }
+          }
+
+          isMapInitialized = true;
+          if (AidFleetMaps.map) {
+            AidFleetMaps.map.addListener('dragstart', function() {
+              isAutoCentering = false;
+            });
+          }
+        } else {
+          // Smoothly animate driver marker and map to new GPS coordinate
+          if (driverMarker) {
+            AidFleetMaps.animateMarker(driverMarker, lat, lng, 2000, isAutoCentering);
+          }
+        }
+
+        const now = Date.now();
+        // 1. Throttle Backend Sync: Update database every 5 seconds
+     
+        if (now - lastBackendUpdate > 5000) {
+          lastBackendUpdate = now;
+          apiFetch(window.APP_ROOT + 'api/driver/update_location.php', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ lat, lng })
+          }).catch(e => console.error("Location sync failed", e));
+        }
+
+        // 2. Throttle ETA Calculation: every 20 seconds
+
+        let destLat = null, destLng = null;
+        if (dispatch.dispatch_status === 'accepted' || dispatch.dispatch_status === 'selected') {
+          destLat = dispatch.lat; destLng = dispatch.lng;
+        } else if (dispatch.dispatch_status === 'enroute_hospital') {
+          destLat = dispatch.hospital_lat; destLng = dispatch.hospital_lng;
+        }
+
+        if (destLat && destLng) {
+          if (now - lastEtaUpdate > 20000 || lastEtaUpdate === 0) {
+            lastEtaUpdate = now;
+            AidFleetMaps.getLiveETA(lat, lng, destLat, destLng, (res) => {
+              const etaEl = document.getElementById('etaVal');
+              if (etaEl) {
+                if (res.success) {
+                  etaEl.textContent = res.text;
+                } else {
+                  etaEl.textContent = 'Calculating...';
+                }
+              }
+            });
+          }
+        } else {
+          // If arrived, show appropriate ETA text
+          const etaEl = document.getElementById('etaVal');
+          if (etaEl && dispatch.dispatch_status === 'arrived') etaEl.textContent = 'Please select a hospital';
+        }
+      }
+
+      function startTracking() {
+        if ("geolocation" in navigator) {
+          const gpsWarning = document.getElementById('gpsWarning');
+          if (gpsWarning) gpsWarning.style.display = 'block';
+          watchId = navigator.geolocation.watchPosition(
+            (position) => {
+              updateLocation(position.coords.latitude, position.coords.longitude);
+            },
+            (error) => {
+              console.warn("Geolocation error:", error);
+              const gpsWarning = document.getElementById('gpsWarning');
+              if (gpsWarning) {
+                gpsWarning.innerHTML = '<span class="material-symbols-outlined inline-icon">warning</span> GPS Error: ' + escapeHtml(error.message) + '. Please ensure location services are enabled.';
+                gpsWarning.style.display = 'block';
+              }
+            },
+            { enableHighAccuracy: true, maximumAge: 0, timeout: 10000 }
+          );
+        } else {
+          showToast('Not Supported', 'Geolocation is not supported by this browser.', 'error');
+        }
+      }
+
+      // Periodic refresh to stay in sync if user refreshes
+      async function periodicRefresh() {
+        if (window.isRatingState || showCancelForm) return;
+        if (!AidFleetMaps.isPageActive()) return; // Skip refresh while tab hidden
+        const prevStatus = dispatch ? dispatch.dispatch_status : null;
+        await loadData();
+        if (!dispatch) {
+          if (window.isRatingState) return;
+          // Dispatch was completed or cancelled externally
+          if (watchId) { navigator.geolocation.clearWatch(watchId); watchId = null; }
+          
+          // Show graceful cancellation message if it wasn't completed via our rating flow
+          window.isRedirectingToNav = true; // Block further polls
+          document.getElementById('app').innerHTML =
+            renderSidebar('driver', 'navigation.html') +
+            '<div class="main-area">' + renderTopbar([]) +
+            '<div class="content"><div class="confirm-screen"><div class="text-center">' +
+              '<div class="confirm-icon" style="background:var(--destructive,#ef4444);"><span class="material-symbols-outlined inline-icon">cancel</span></div>' +
+              '<h2 class="font-bold" style="font-size:20px;">Emergency Cancelled</h2>' +
+              '<p class="text-sm text-muted mt-2">Requester has cancelled the request, redirecting to dashboard...</p>' +
+            '</div></div></div></div>';
+setTimeout(() => { window.location.href = 'dashboard.html'; }, 3500);
+          return;
+        }
+        // If status changed, force re-render
+        if (dispatch.dispatch_status !== prevStatus) {
+          isMapInitialized = false;
+          driverMarker = null;
+          destMarker = null;
+          renderSkeleton();
+          AidFleetMaps.loadMapLib(() => {
+            // startTracking will re-init map
+            if (!watchId) startTracking();
+          });
+        }
+      }
+
+      await loadData();
+      if (renderSkeleton()) {
+        AidFleetMaps.loadMapLib(() => {
+          startTracking();
+        });
+        // Refresh every 10s to detect status changes
+        setInterval(periodicRefresh, 10000);
+      }
+    })();
+  </script>
+</body>
+
+</html>

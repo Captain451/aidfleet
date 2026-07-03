@@ -1,0 +1,528 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>AidFleet - Driver Dashboard</title>
+  <link rel="stylesheet" href="../css/style.css">
+  
+<link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:opsz,wght,FILL,GRAD@20..48,100..700,0..1,-50..200" rel="stylesheet" />
+</head>
+<body>
+  <div class="app-layout" id="app"></div>
+  <script>
+    // Initialize routing base
+    window.APP_ROOT = "../";
+  </script>
+  <script src="../js/data.js"></script>
+  <script>
+    (async () => {
+      const user = await requireAuth(['driver']);
+      if (!user) return;
+
+      let driver = null;
+      let dispatch = null;
+      let showRejectForm = false;
+      let bannerMessage = '';
+      let lastDriverToast = null;
+      let _lastSoundDispatchId = null;
+
+      // --- Looping Notification Sound ---
+      let alarmInterval = null;
+      let isAlarmPlaying = false;
+
+      function playSingleChime() {
+        try {
+          const ctx = new (window.AudioContext || window.webkitAudioContext)();
+          const notes = [{freq: 523.25, start: 0, dur: 0.15}, {freq: 659.25, start: 0.18, dur: 0.15}, {freq: 783.99, start: 0.36, dur: 0.25}];
+          notes.forEach(n => {
+            const osc = ctx.createOscillator();
+            const gain = ctx.createGain();
+            osc.type = 'sine';
+            osc.frequency.value = n.freq;
+            gain.gain.setValueAtTime(0.3, ctx.currentTime + n.start);
+            gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + n.start + n.dur);
+            osc.connect(gain);
+            gain.connect(ctx.destination);
+            osc.start(ctx.currentTime + n.start);
+            osc.stop(ctx.currentTime + n.start + n.dur + 0.05);
+          });
+          setTimeout(() => ctx.close(), 1500);
+        } catch(e) { console.warn('Audio failed', e); }
+      }
+
+      function startAlarm() {
+        if (isAlarmPlaying) return;
+        isAlarmPlaying = true;
+        playSingleChime();
+        alarmInterval = setInterval(playSingleChime, 2000); // Repeat every 2 seconds
+        
+        // Auto-stop after 2 minutes to prevent browser lockup if unattended
+        setTimeout(() => { stopAlarm(); }, 120000); 
+      }
+
+      function stopAlarm() {
+        isAlarmPlaying = false;
+        if (alarmInterval) {
+          clearInterval(alarmInterval);
+          alarmInterval = null;
+        }
+      }
+
+
+
+      let rejectReasonDraft = '';
+      let justRejected = false;
+      let showCancelForm = false;
+      let cancelReasonDraft = '';
+
+      async function refresh() {
+        const prof = await apiFetch(window.APP_ROOT + 'api/driver/profile.php');
+        driver = prof && prof.driver ? prof.driver : null;
+        const dres = await apiFetch(window.APP_ROOT + 'api/driver/active_dispatch.php');
+        dispatch = dres && dres.dispatch ? dres.dispatch : null;
+      }
+
+      function render() {
+        if (showRejectForm) {
+          const ta = document.getElementById('rejectReason');
+          if (ta) rejectReasonDraft = ta.value;
+        }
+        if (!driver) {
+          document.getElementById('app').innerHTML =
+            renderSidebar('driver', 'dashboard.html') +
+            '<div class="main-area">' + renderTopbar([]) +
+            '<div class="content"><div style="display:flex;align-items:center;justify-content:center;min-height:60vh;">' +
+              '<p class="text-muted">Driver profile not found. Please contact admin.</p></div></div></div>';
+          return;
+        }
+
+        const isOnline = driver.availability_status === 'available';
+        const isVerified = driver.verification_status === 'approved';
+        const note = driver.verification_status === 'rejected' ? driver.verification_note || '' : '';
+        const isRevoked = typeof note === 'string' && note.toLowerCase().includes('temporarily disabled');
+        const isVerifiedUi = isVerified || isRevoked;
+        const hasIncoming = dispatch && dispatch.dispatch_status === 'selected';
+        const hasActive = dispatch && ['accepted', 'arrived', 'enroute_hospital'].includes(dispatch.dispatch_status);
+        const verificationLabel = isRevoked ? 'Temporarily Disabled' : driver.verification_status;
+
+        let verificationAlert = '';
+        if (!isVerified) {
+          if (driver.verification_status === 'rejected') {
+            if (isRevoked) {
+              const msg = note.replace(/^temporarily disabled:\s*/i, '').replace(/^rejected:\s*/i, '') || 'Unspecified';
+              verificationAlert = '<div class="alert-error">Account temporarily disabled. Reason: ' + escapeHtml(msg) + '. Please contact the administrator.</div>';
+            } else {
+              const msg = note.replace(/^rejected:\s*/i, '') || 'Unspecified';
+              verificationAlert = '<div class="alert-error"><span class="material-symbols-outlined inline-icon">warning</span> Your registration request was rejected. Reason: ' + escapeHtml(msg) + '. Please contact the administrator for further details.</div>';
+            }
+          } else {
+            verificationAlert = '<div class="alert-warning"><span class="material-symbols-outlined inline-icon">warning</span> Your account is pending verification by admin. You won\'t receive dispatch requests until verified.</div>';
+          }
+        }
+
+        let incomingSection = '';
+        if (hasIncoming) {
+          let actions = '';
+          if (!showRejectForm) {
+            actions =
+              '<div class="flex-row gap-3" style="margin-top:16px;flex-wrap:wrap;">' +
+                '<button class="btn btn-success" style="flex:1;min-width:90px;" onclick="acceptRequest()">Accept</button>' +
+                '<button class="btn btn-outline-destructive" style="flex:1;min-width:90px;" onclick="openRejectForm()">Reject</button>' +
+                '<button class="btn btn-info" style="flex:1;min-width:90px;" onclick="showRequestMap()"><span class="material-symbols-outlined inline-icon">map</span> Show Map</button>' +
+              '</div>';
+          } else {
+            actions =
+              '<div class="card card-padded mt-2">' +
+                '<label class="text-sm font-medium">Reject reason (optional)</label>' +
+                '<textarea id="rejectReason" class="form-textarea" rows="2" placeholder="Briefly explain why you are rejecting this dispatch...">' + escapeHtml(rejectReasonDraft || '') + '</textarea>' +
+                '<div class="flex-row gap-3 mt-2">' +
+                  '<button class="btn btn-outline-destructive btn-sm" style="flex:1;" onclick="submitReject()">Confirm Reject</button>' +
+                  '<button class="btn btn-sm" style="flex:1;" onclick="cancelReject()">Cancel</button>' +
+                '</div>' +
+              '</div>';
+          }
+          const finalReqAvatarSrc = dispatch.requester_profile_image ? safeAssetUrl(dispatch.requester_profile_image) : '';
+          const reqAvatar = finalReqAvatarSrc ? '<img src="' + escapeAttr(finalReqAvatarSrc) + '" style="width:24px;height:24px;border-radius:50%;object-fit:cover;vertical-align:middle;">' : '<span class="material-symbols-outlined inline-icon">person</span>';
+          const reqRating = dispatch.requester_rating !== undefined ? '<span style="color:#fbbf24;font-size:12px;margin-left:4px;">★ ' + Number(dispatch.requester_rating).toFixed(1) + '</span>' : '';
+          
+          incomingSection =
+            '<div class="incoming-request">' +
+              '<div class="incoming-header"><div class="incoming-icon"><span class="material-symbols-outlined inline-icon">explore</span></div><div><h3 class="font-bold">Incoming Emergency!</h3>' +
+                '<p class="text-sm text-muted">' + escapeHtml(dispatch.emergency_type || 'Emergency') + ' - ' + escapeHtml(dispatch.location) + '</p></div></div>' +
+              '<div style="display:flex;align-items:center;gap:8px;margin-bottom:8px;">' + reqAvatar + '<span class="font-medium">' + escapeHtml(dispatch.requester_name) + '</span>' + reqRating + '</div>' +
+              '<p class="text-sm text-muted"><span class="material-symbols-outlined inline-icon">phone</span> Phone: ' + escapeHtml(dispatch.requester_phone) + '</p>' +
+              actions +
+            '</div>';
+        }
+
+        let dispatchSection = '';
+        if (hasActive) {
+          let cancelActions = '';
+          if (!showCancelForm) {
+            cancelActions = '<button class="btn btn-outline-destructive" onclick="openCancelForm()"><span class="material-symbols-outlined inline-icon">cancel</span> Cancel Response</button>';
+          } else {
+            cancelActions =
+              '<div class="card card-padded mt-2" style="grid-column:1/-1;">' +
+                '<label class="text-sm font-medium">Cancellation reason (optional)</label>' +
+                '<textarea id="cancelReason" class="form-textarea" rows="2" placeholder="Briefly explain why you are cancelling this response...">' + escapeHtml(cancelReasonDraft || '') + '</textarea>' +
+                '<div class="flex-row gap-3 mt-2">' +
+                  '<button class="btn btn-outline-destructive btn-sm" style="flex:1;" onclick="submitCancelResponse()">Confirm Cancel</button>' +
+                  '<button class="btn btn-sm" style="flex:1;" onclick="closeCancelForm()">Back</button>' +
+                '</div>' +
+              '</div>';
+          }
+          dispatchSection =
+            '<div class="dispatch-card">' +
+              '<h3 class="font-bold mb-3">Active Dispatch</h3>' +
+              '<p class="text-sm text-muted">' + escapeHtml(dispatch.emergency_type || 'Emergency') + ' - ' + escapeHtml(dispatch.location) + '</p>' +
+              '<p class="text-sm text-muted mt-2"><span class="material-symbols-outlined inline-icon">schedule</span> In progress (' + escapeHtml(dispatch.dispatch_status) + ')</p>' +
+              '<div class="dispatch-actions mt-3 nav-action-row">' +
+                '<button id="viewProgressBtn" class="btn btn-info" onclick="viewProgress()"><span class="material-symbols-outlined inline-icon">map</span> View Progress</button>' +
+                cancelActions +
+              '</div>' +
+            '</div>';
+        }
+
+        const notifications = [];
+        if (hasIncoming) {
+          notifications.push({ message: '<span class="material-symbols-outlined notif-icon">emergency</span> New emergency dispatch request received!', time: dispatch.dispatch_time });
+        }
+        if (!isVerified && driver.verification_status === 'rejected') {
+          if (note && note.toLowerCase().includes('temporarily disabled')) {
+            const reasonMsg = note.replace(/^temporarily disabled:\s*/i, '').replace(/^rejected:\s*/i, '') || 'Unspecified';
+            notifications.push({ message: '<span class="material-symbols-outlined notif-icon">block</span> Account temporarily disabled. Reason: ' + escapeHtml(reasonMsg) + '. Please contact the administrator.', time: driver.updated_at });
+          } else {
+            const rejectMsg = note.replace(/^rejected:\s*/i, '') || 'Unspecified';
+            notifications.push({ message: '<span class="material-symbols-outlined notif-icon">warning</span> Your registration request was rejected. Reason: ' + escapeHtml(rejectMsg) + '. Please contact the administrator for further details.', time: driver.updated_at });
+          }
+        } else if (!isVerified && driver.verification_status === 'pending') {
+          notifications.push({ message: '<span class="material-symbols-outlined notif-icon">hourglass_empty</span> Your account is pending verification', time: driver.created_at });
+        } else if (isVerified && note === 'reactivated') {
+          notifications.push({ message: '<span class="material-symbols-outlined notif-icon">check_circle</span> Your account has been successfully reactivated.', time: driver.updated_at });
+        }
+
+        document.getElementById('app').innerHTML =
+          renderSidebar('driver', 'dashboard.html') +
+          '<div class="main-area">' + renderTopbar(notifications) +
+          '<div class="content"><div class="space-y-6">' +
+            '<div class="flex-between"><div><h1 class="page-title">Welcome, ' + escapeHtml(user.name) + '</h1><p class="page-subtitle">Ambulance Driver Dashboard</p></div>' +
+              '<div class="toggle-container">' +
+                '<label class="switch-toggle">' +
+                  '<input type="checkbox" ' + (isOnline ? 'checked' : '') + (hasActive ? ' disabled' : '') + ' onchange="toggleOnline()">' +
+                  '<span class="switch-slider"></span>' +
+                '</label>' +
+                '<span class="toggle-label" style="color:' + (isOnline ? 'var(--success)' : 'var(--muted-foreground)') + '">' + (isOnline ? 'Online' : 'Offline') + '</span>' +
+              '</div>' +
+            '</div>' +
+            '<div id="driverError" class="alert-inline-error" style="display:none; margin-bottom: 12px;"></div>' +
+            verificationAlert +
+            '<div class="stats-grid stats-grid-3">' +
+              '<div class="stat-card"><div><p class="stat-label">Status</p><p class="stat-value" style="text-transform: capitalize;">' + escapeHtml(isOnline ? 'Online' : driver.availability_status) + '</p></div><div class="stat-icon ' + (isOnline ? 'stat-icon-success' : 'stat-icon-default') + '"><span class="material-symbols-outlined">radio</span></div></div>' +
+              '<div class="stat-card"><div><p class="stat-label">Verification</p><p class="stat-value" style="text-transform: capitalize;">' + escapeHtml(verificationLabel) + '</p></div><div class="stat-icon ' + (isVerifiedUi ? 'stat-icon-success' : 'stat-icon-default') + '"><span class="material-symbols-outlined">check_circle</span></div></div>' +
+              '<div class="stat-card"><div><p class="stat-label">Driver ID</p><p class="stat-value">#' + escapeHtml(driver.driver_id) + '</p></div><div class="stat-icon stat-icon-default"><span class="material-symbols-outlined">badge</span></div></div>' +
+            '</div>' +
+            incomingSection +
+            dispatchSection +
+            '<div class="card card-padded"><h3 class="font-bold mb-3">Vehicle Information</h3>' +
+              '<div class="info-grid">' +
+                '<div class="info-item"><span class="info-label">License:</span><span class="info-value">' + escapeHtml((driver.license_number || '').toUpperCase()) + '</span></div>' +
+                '<div class="info-item"><span class="info-label">Plate:</span><span class="info-value">' + escapeHtml((driver.ambulance_registration || '').toUpperCase()) + '</span></div>' +
+                '<div class="info-item"><span class="info-label">Type:</span><span class="info-value">' + escapeHtml(driver.ambulance_type) + '</span></div>' +
+                '<div class="info-item"><span class="info-label">Verified:</span><span class="info-value" style="color:' + (isVerifiedUi ? 'var(--success)' : 'var(--warning)') + ';">' + (isVerifiedUi ? 'Yes' : 'Pending') + '</span></div>' +
+              '</div></div>' +
+          '</div></div></div>';
+      }
+
+      window.toggleOnline = async function() {
+        const err = document.getElementById('driverError');
+        if (err) err.style.display = 'none';
+        if (!driver) return;
+        
+        const toggleInput = document.querySelector('.switch-toggle input');
+        
+        if (driver.verification_status !== 'approved') {
+           if (toggleInput) {
+             toggleInput.checked = true;
+             setTimeout(() => { toggleInput.checked = false; }, 500);
+           }
+           // Show the inline error message
+           showInlineError('driverError', 'You must be verified to go online.');
+           if (typeof startPolling === 'function') startPolling();
+
+           // Inject a shrinking bar beneath the error text, then auto-hide after 5 s
+           const errEl = document.getElementById('driverError');
+           if (errEl) {
+             // Remove any existing bar
+             const oldBar = document.getElementById('driverErrorBar');
+             if (oldBar) oldBar.remove();
+             const bar = document.createElement('span');
+             bar.id = 'driverErrorBar';
+             bar.className = 'driver-error-shrink-bar';
+             errEl.appendChild(bar);
+             setTimeout(() => {
+               if (errEl) errEl.style.display = 'none';
+               if (bar.parentNode) bar.parentNode.removeChild(bar);
+             }, 5000);
+           }
+           return;
+        }
+        
+        const next = (driver.availability_status === 'available') ? 'offline' : 'available';
+        const onActiveTrip = dispatch && ['accepted', 'arrived', 'enroute_hospital'].includes(dispatch.dispatch_status);
+        if (next === 'available' && (onActiveTrip || driver.availability_status === 'on_route')) {
+          if (toggleInput) {
+            toggleInput.checked = true;
+            setTimeout(function() { toggleInput.checked = false; }, 500);
+          }
+          showInlineError('driverError', 'You cannot go online while navigating an active emergency. Complete or cancel the trip first.');
+          const errEl = document.getElementById('driverError');
+          if (errEl) {
+            const oldBar = document.getElementById('driverErrorBar');
+            if (oldBar) oldBar.remove();
+            const bar = document.createElement('span');
+            bar.id = 'driverErrorBar';
+            bar.className = 'driver-error-shrink-bar';
+            errEl.appendChild(bar);
+            setTimeout(function() {
+              if (errEl) errEl.style.display = 'none';
+              if (bar.parentNode) bar.parentNode.removeChild(bar);
+            }, 5000);
+          }
+          return;
+        }
+        const res = await apiFetch(window.APP_ROOT + 'api/driver/set_availability.php', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ availability_status: next }),
+        });
+        if (!res.success) {
+          if (toggleInput) toggleInput.checked = !toggleInput.checked; // Revert visually
+          if (err) { err.textContent = res.message || 'Could not update status'; err.style.display = 'block'; }
+          return;
+        }
+        // When going online, capture real GPS location for distance sorting
+        if (next === 'available' && 'geolocation' in navigator) {
+          try {
+            const pos = await new Promise((resolve, reject) => {
+              navigator.geolocation.getCurrentPosition(resolve, reject, { enableHighAccuracy: true, timeout: 15000, maximumAge: 0 });
+            });
+            await apiFetch(window.APP_ROOT + 'api/driver/update_location.php', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ lat: pos.coords.latitude, lng: pos.coords.longitude }),
+            });
+          } catch(geoErr) {
+            console.warn('GPS capture failed when going online:', geoErr.message);
+            showToast('GPS Warning', 'Could not capture your location. Distance sorting may be inaccurate.', 'warning');
+          }
+        }
+        await refresh();
+        render();
+      };
+
+      window.acceptRequest = async function() {
+        stopAlarm();
+        if (!dispatch) return;
+        window.isRedirectingToNav = true;
+        const res = await apiFetch(window.APP_ROOT + 'api/driver/respond_dispatch.php', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ dispatch_id: dispatch.dispatch_id, decision: 'accepted' }),
+        });
+        if (!res || !res.success) {
+          await refresh();
+          render();
+          return;
+        }
+        // Show a short confirmation message before redirecting to navigation.
+        document.getElementById('app').innerHTML =
+          renderSidebar('driver', 'dashboard.html') +
+          '<div class="main-area">' + renderTopbar([]) +
+          '<div class="content"><div class="confirm-screen"><div class="text-center">' +
+            '<div class="confirm-icon"><span class="material-symbols-outlined inline-icon">check</span></div>' +
+            '<h2 class="font-bold" style="font-size:20px;">Dispatch Accepted</h2>' +
+            '<p class="text-sm text-muted mt-2">Redirecting to navigation...</p>' +
+          '</div></div></div></div>';
+setTimeout(() => { window.location.href = 'navigation.html'; }, 1500);
+      };
+
+      window.showRequestMap = function() {
+        stopAlarm();
+        window.isRedirectingToNav = true;
+        document.getElementById('app').innerHTML =
+          renderSidebar('driver', 'dashboard.html') +
+          '<div class="main-area">' + renderTopbar([]) +
+          '<div class="content"><div class="confirm-screen"><div class="text-center">' +
+            '<div class="confirm-icon" style="background:var(--info,#0ea5e9);"><span class="material-symbols-outlined inline-icon">map</span></div>' +
+            '<h2 class="font-bold" style="font-size:20px;">Redirecting to navigation...</h2>' +
+            '<p class="text-sm text-muted mt-2">Opening the map for this emergency request.</p>' +
+          '</div></div></div></div>';
+setTimeout(() => { window.location.href = 'navigation.html'; }, 3500);
+      };
+
+      window.openRejectForm = function() {
+        stopAlarm();
+        if (!dispatch) return;
+        showRejectForm = true;
+        render();
+      };
+
+      window.cancelReject = function() {
+        showRejectForm = false;
+        rejectReasonDraft = '';
+        render();
+      };
+
+      window.submitReject = async function() {
+        if (!dispatch) return;
+        const textarea = document.getElementById('rejectReason');
+        const reason = textarea ? textarea.value.trim() : '';
+        justRejected = true;
+        const res = await apiFetch(window.APP_ROOT + 'api/driver/respond_dispatch.php', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ dispatch_id: dispatch.dispatch_id, decision: 'rejected', reject_reason: reason }),
+        });
+        showRejectForm = false;
+        rejectReasonDraft = '';
+        stopAlarm();
+        if (res && res.success) {
+          const displayReason = reason || 'Unspecified';
+          window.isRedirectingToNav = true;
+          document.getElementById('app').innerHTML =
+            renderSidebar('driver', 'dashboard.html') +
+            '<div class="main-area">' + renderTopbar([]) +
+            '<div class="content"><div class="confirm-screen"><div class="text-center">' +
+              '<div class="confirm-icon" style="background:var(--destructive,#ef4444);"><span class="material-symbols-outlined inline-icon">block</span></div>' +
+              '<h2 class="font-bold" style="font-size:20px;">Request Rejected</h2>' +
+              '<p class="text-sm text-muted mt-2">Reason: ' + escapeHtml(displayReason) + '</p>' +
+              '<p class="text-sm text-muted mt-2">Returning to dashboard...</p>' +
+            '</div></div></div></div>';
+          setTimeout(async function() {
+            window.isRedirectingToNav = false;
+            justRejected = false;
+            await refresh();
+            render();
+            if (typeof startPolling === 'function') startPolling();
+          }, 3500);
+          return;
+        }
+        await refresh();
+        render();
+        setTimeout(function() { justRejected = false; }, 3000);
+      };
+
+      window.openCancelForm = function() {
+        if (!dispatch) return;
+        showCancelForm = true;
+        render();
+      };
+
+      window.closeCancelForm = function() {
+        showCancelForm = false;
+        cancelReasonDraft = '';
+        render();
+      };
+
+      window.submitCancelResponse = async function() {
+        if (!dispatch) return;
+        const textarea = document.getElementById('cancelReason');
+        const reason = textarea ? textarea.value.trim() : '';
+        const res = await apiFetch(window.APP_ROOT + 'api/driver/cancel_dispatch.php', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ dispatch_id: dispatch.dispatch_id, cancel_reason: reason }),
+        });
+        showCancelForm = false;
+        cancelReasonDraft = '';
+        if (res && res.success) {
+          const displayReason = reason || 'Unspecified';
+          window.isRedirectingToNav = true;
+          document.getElementById('app').innerHTML =
+            renderSidebar('driver', 'dashboard.html') +
+            '<div class="main-area">' + renderTopbar([]) +
+            '<div class="content"><div class="confirm-screen"><div class="text-center">' +
+              '<div class="confirm-icon" style="background:var(--destructive,#ef4444);"><span class="material-symbols-outlined inline-icon">cancel</span></div>' +
+              '<h2 class="font-bold" style="font-size:20px;">Response Cancelled</h2>' +
+              '<p class="text-sm text-muted mt-2">Reason: ' + escapeHtml(displayReason) + '</p>' +
+              '<p class="text-sm text-muted mt-2">The requester has been notified.</p>' +
+            '</div></div></div></div>';
+          setTimeout(async function() {
+            window.isRedirectingToNav = false;
+            await refresh();
+            render();
+            if (typeof startPolling === 'function') startPolling();
+          }, 3500);
+        } else {
+          showToast('Error', (res && res.message) || 'Could not cancel response.', 'error');
+          render();
+        }
+      };
+
+      function showEmergencyCancelledScreen() {
+        document.getElementById('app').innerHTML =
+          renderSidebar('driver', 'dashboard.html') +
+          '<div class="main-area">' + renderTopbar([]) +
+          '<div class="content"><div class="confirm-screen"><div class="text-center">' +
+            '<div class="confirm-icon" style="background:var(--destructive,#ef4444);"><span class="material-symbols-outlined inline-icon">cancel</span></div>' +
+            '<h2 class="font-bold" style="font-size:20px;">Emergency Cancelled</h2>' +
+            '<p class="text-sm text-muted mt-2">The requester cancelled this emergency. Redirecting...</p>' +
+          '</div></div></div></div>';
+      }
+
+      window.cancelResponse = function() {
+        openCancelForm();
+      };
+
+      window.viewProgress = function() {
+        if (!dispatch) return;
+        const btn = document.getElementById('viewProgressBtn');
+        if (btn) {
+          btn.disabled = true;
+          btn.innerHTML = '<span class="material-symbols-outlined inline-icon">progress_activity</span> Redirecting to Navigation...';
+}
+        setTimeout(() => {
+          window.location.href = 'navigation.html';
+        }, 1500);
+      };
+
+      let refreshTimer;
+      async function doRefresh() {
+        if (window.isRedirectingToNav) return;
+        const prevDispatchId = dispatch ? dispatch.dispatch_id : null;
+        const prevHasIncoming = dispatch && dispatch.dispatch_status === 'selected';
+        await refresh();
+        const nowHasIncoming = dispatch && dispatch.dispatch_status === 'selected';
+        if (nowHasIncoming) {
+          if (!isAlarmPlaying) startAlarm();
+        }
+        if (!nowHasIncoming && isAlarmPlaying) {
+          stopAlarm();
+        }
+        if (prevHasIncoming && !nowHasIncoming && !dispatch && prevDispatchId && !justRejected) {
+          showRejectForm = false;
+          rejectReasonDraft = '';
+          window.isRedirectingToNav = true;
+          stopAlarm();
+          showEmergencyCancelledScreen();
+          setTimeout(function() {
+            window.isRedirectingToNav = false;
+            window.location.href = 'dashboard.html';
+          }, 2500);
+          return;
+        }
+        if (showRejectForm || showCancelForm) return;
+        render();
+      }
+      window.startPolling = function() {
+        if (refreshTimer) clearInterval(refreshTimer);
+        refreshTimer = setInterval(doRefresh, 5000);
+      };
+
+      await doRefresh();
+      startPolling();
+    })();
+  </script>
+</body>
+</html>

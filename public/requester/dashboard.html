@@ -1,0 +1,131 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>AidFleet - Requester Dashboard</title>
+  <link rel="stylesheet" href="../css/style.css">
+  
+<link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:opsz,wght,FILL,GRAD@20..48,100..700,0..1,-50..200" rel="stylesheet" />
+</head>
+<body>
+  <div class="app-layout" id="app"></div>
+  <script>
+    // Initialize routing base
+    window.APP_ROOT = "../";
+  </script>
+  <script src="../js/data.js"></script>
+  <script>
+    (async () => {
+      const user = await requireAuth(['requester']);
+      if (!user) return;
+
+      const [listRes, activeRes, driverCountRes] = await Promise.all([
+        apiFetch(window.APP_ROOT + 'api/request/list.php'),
+        apiFetch(window.APP_ROOT + 'api/request/active.php'),
+        apiFetch(window.APP_ROOT + 'api/drivers/count.php'),
+      ]);
+
+      const requests = (listRes && listRes.requests) ? listRes.requests : [];
+      let activeRequest = (activeRes && activeRes.request) ? activeRes.request : null;
+      const completedCount = requests.filter(r => r.request_status === 'completed').length;
+      const availableDrivers = (driverCountRes && typeof driverCountRes.count === 'number') ? driverCountRes.count : 0;
+
+      // If the "active" request is a rejected one but there is a newer
+      // completed request (i.e. second-scenario trip after a rejection),
+      // then do not show it as active on the dashboard.
+      if (activeRequest && activeRequest.request_status === 'rejected') {
+        const currentTime = new Date(activeRequest.request_time).getTime();
+        const hasNewerCompleted = requests.some(r => {
+          if (!r.request_time) return false;
+          const t = new Date(r.request_time).getTime();
+          return t > currentTime && r.request_status === 'completed';
+        });
+        if (hasNewerCompleted) {
+          activeRequest = null;
+        }
+      }
+
+      let activeSection = '';
+      const activeForStats = activeRequest && activeRequest.request_status !== 'cancelled' ? activeRequest : null;
+      if (activeForStats) {
+        const dispatch = activeForStats.dispatch || null;
+        const dispatchStatus = dispatch ? dispatch.dispatch_status : null;
+        const showActiveCard = dispatch && ['selected', 'accepted', 'arrived', 'enroute_hospital', 'rejected'].includes(dispatchStatus);
+        if (showActiveCard) {
+          const ctaLabel = (dispatchStatus === 'rejected') ? 'Continue Emergency' : 'Track Ambulance';
+          let driverPhone = (dispatch.driver_phone || '').trim();
+          if (!driverPhone && dispatch.driver_id) {
+            try {
+              const p = await apiFetch(window.APP_ROOT + 'api/drivers/phone.php?driver_id=' + encodeURIComponent(dispatch.driver_id));
+              if (p && p.success && p.phone) driverPhone = String(p.phone).trim();
+            } catch (e) {}
+          }
+          let contactBlock = '';
+          if (dispatch.driver_name || dispatch.driver_id) {
+            contactBlock = '<div class="mt-3 pt-3" style="border-top:1px solid var(--border);">' +
+              '<p class="text-xs text-muted contact-card-title">Contacts</p>' +
+              '<p class="text-sm mt-2 contact-row"><span class="material-symbols-outlined inline-icon">phone</span><span>Driver: <strong>' + escapeHtml(driverPhone || '-') + '</strong></span></p>' +
+              '</div>';
+          }
+          activeSection = '<div class="emergency-active-card">' +
+            '<div class="flex-between mb-3"><h3 class="font-bold">Active Emergency</h3>' + getStatusBadge(activeForStats.request_status) + '</div>' +
+            '<p class="text-sm text-muted">' + escapeHtml(activeForStats.emergency_type || 'Emergency') + ' - ' + escapeHtml(activeForStats.description) + '</p>' +
+            '<p class="text-sm text-muted mt-2"><span class="material-symbols-outlined inline-icon">location_on</span> ' + escapeHtml(activeForStats.location) + '</p>' +
+            (dispatch && dispatch.driver_name ? '<p class="text-sm mt-2">Driver: <strong>' + escapeHtml(dispatch.driver_name) + '</strong></p>' : '') +
+            contactBlock +
+            '<a href="navigation.html" class="btn btn-primary btn-sm mt-3" style="display:inline-flex;margin-top:16px;">' + ctaLabel + '</a>' +
+            '</div>';
+        }
+      }
+
+      let tableRows = '';
+      if (requests.length === 0) {
+        tableRows = '<tr><td colspan="4" class="text-center text-muted" style="padding:24px;">No requests yet</td></tr>';
+      } else {
+        requests.slice(0, 10).forEach(r => {
+          tableRows += '<tr><td class="font-medium">' + escapeHtml(r.emergency_type || 'Emergency') + '</td>' +
+            '<td>' + getStatusBadge(r.request_status) + '</td>' +
+            '<td class="text-muted">' + new Date(r.request_time).toLocaleDateString() + '</td>' +
+            '<td class="text-muted">' + escapeHtml(r.driver_name || '-') + '</td></tr>';
+        });
+      }
+
+      const notifications = [];
+      if (activeRequest && activeRequest.dispatch) {
+        const ds = activeRequest.dispatch.dispatch_status;
+        if (ds === 'accepted') {
+          notifications.push({ message: '<span class="material-symbols-outlined notif-icon">emergency_share</span> Your emergency request has been accepted by a driver. Ambulance is on the way!', time: activeRequest.dispatch.driver_response_time || activeRequest.dispatch.dispatch_time || new Date().toISOString() });
+        } else if (ds === 'arrived') {
+          notifications.push({ message: '<span class="material-symbols-outlined notif-icon">location_on</span> The ambulance driver has arrived at your location.', time: new Date().toISOString() });
+        } else if (ds === 'enroute_hospital') {
+          notifications.push({ message: '<span class="material-symbols-outlined notif-icon">monitor_heart</span> You are being navigated to ' + escapeHtml(activeRequest.dispatch.hospital_name || 'the hospital') + '.', time: new Date().toISOString() });
+        } else if (ds === 'rejected') {
+          notifications.push({ message: '<span class="material-symbols-outlined notif-icon">warning</span> Your selected driver rejected the dispatch. You can choose another ambulance.', time: activeRequest.updated_at || activeRequest.request_time || new Date().toISOString() });
+        } else if (ds === 'selected') {
+          notifications.push({ message: '<span class="material-symbols-outlined notif-icon">schedule</span> A driver has been selected for your emergency. Awaiting their response.', time: activeRequest.dispatch.dispatch_time || activeRequest.request_time || new Date().toISOString() });
+        }
+      }
+
+      document.getElementById('app').innerHTML =
+        renderSidebar('requester', 'dashboard.html') +
+        '<div class="main-area">' + renderTopbar(notifications) +
+        '<div class="content"><div class="space-y-6">' +
+          '<div><h1 class="page-title">Welcome, ' + escapeHtml(user.name) + '</h1><p class="page-subtitle">Emergency Requester Dashboard</p></div>' +
+          '<a href="emergency-form.html" class="emergency-cta" style="display:block;"><div class="emergency-cta-inner">' +
+            '<div class="emergency-cta-icon"><span class="material-symbols-outlined">warning</span></div>' +
+            '<div><h3>Report Emergency</h3><p>Submit a new emergency request now</p></div>' +
+          '</div></a>' +
+          '<div class="stats-grid stats-grid-3">' +
+            '<div class="stat-card"><div><p class="stat-label">Active Request</p><p class="stat-value">' + (activeForStats ? '1' : '0') + '</p></div><div class="stat-icon ' + (activeForStats ? 'stat-icon-emergency' : 'stat-icon-default') + '"><span class="material-symbols-outlined">schedule</span></div></div>' +
+            '<div class="stat-card"><div><p class="stat-label">Completed</p><p class="stat-value">' + completedCount + '</p></div><div class="stat-icon stat-icon-success"><span class="material-symbols-outlined">check_circle</span></div></div>' +
+            '<div class="stat-card"><div><p class="stat-label">Available Drivers</p><p class="stat-value">' + availableDrivers + '</p></div><div class="stat-icon stat-icon-default"><span class="material-symbols-outlined">emergency_share</span></div></div>' +
+          '</div>' +
+          activeSection +
+          '<div><h3 class="section-title mb-3">Recent Requests</h3>' +
+          '<div class="card"><div style="overflow-x:auto;"><table><thead><tr><th>Type</th><th>Status</th><th>Date</th><th>Driver</th></tr></thead><tbody>' + tableRows + '</tbody></table></div></div></div>' +
+        '</div></div></div>';
+})();
+  </script>
+</body>
+</html>

@@ -1,0 +1,899 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>My Profile | AidFleet</title>
+  <link rel="stylesheet" href="../css/style.css">
+  
+<link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:opsz,wght,FILL,GRAD@20..48,100..700,0..1,-50..200" rel="stylesheet" />
+</head>
+<body>
+  <div class="app-layout" id="app"></div>
+    <div id="toastContainer"></div>
+  <script>
+    // Initialize routing base
+    window.APP_ROOT = "../";
+  </script>
+  <script src="../js/data.js"></script>
+  <script>
+
+    (async () => {
+      const user = await requireAuth(['requester', 'driver', 'admin']);
+      if (!user) return;
+
+      const roleLabel = user.role === 'requester'
+        ? 'Emergency Requester'
+        : user.role === 'driver'
+          ? 'Ambulance Driver'
+          : 'System Administrator';
+
+      let profile = null;
+      let editing = false;
+
+      async function loadProfile() {
+        const r = await apiFetch(window.APP_ROOT + 'api/profile/get.php');
+        if (!r || !r.success) {
+          showToast('Error', (r && r.message) ? r.message : 'Could not load profile...');
+          return null;
+        }
+        return r.profile || null;
+      }
+
+      function render() {
+        if (!profile) {
+          document.getElementById('app').innerHTML =
+            renderSidebar(user.role, 'settings.html') +
+            '<div class="main-area">' + renderTopbar([]) +
+            '<div class="content"><div style="display:flex;align-items:center;justify-content:center;min-height:60vh;">' +
+            '<p class="text-muted">Profile not found.</p></div></div></div>';
+          return;
+        }
+
+        const hasPhone = user.role !== 'admin';
+        const avatar = escapeHtml((profile.full_name || user.name || '?').charAt(0));
+
+        const viewSection =
+          '<div id="profileView">' +
+            '<div class="profile-details-grid' + (hasPhone ? ' has-phone' : '') + '">' +
+              '<div><label class="text-sm text-muted" style="display:flex;align-items:center;gap:6px;"><span class="material-symbols-outlined" style="font-size:1.2em;">person</span> Full Name</label><p class="font-medium">' + escapeHtml(profile.full_name || '—') + '</p></div>' +
+              '<div><label class="text-sm text-muted" style="display:flex;align-items:center;gap:6px;"><span class="material-symbols-outlined" style="font-size:1.2em;">mail</span> Email</label><p class="font-medium">' + escapeHtml(profile.email || '—') + '</p></div>' +
+              (hasPhone ? '<div><label class="text-sm text-muted" style="display:flex;align-items:center;gap:6px;"><span class="material-symbols-outlined" style="font-size:1.2em;">phone</span> Phone</label><p class="font-medium">' + escapeHtml(profile.phone || '—') + '</p></div>' : '') +
+            '</div>' +
+          '</div>';
+
+        const editSection =
+          '<div id="profileEdit" style="display:' + (editing ? '' : 'none') + '">' +
+            '<div class="grid-2">' +
+              '<div class="form-group"><label>Email</label><input class="form-input" type="email" id="editEmail" value="' + escapeAttr(profile.email || '') + '" oninput="if(window.checkChanges) checkChanges()"></div>' +
+              (hasPhone ? '<div class="form-group"><label>Phone</label><div class="flex-row" style="gap:0;"><span style="background:var(--muted);border:1px solid var(--border);border-right:none;padding:10px 14px;border-radius:8px 0 0 8px;font-size:14px;font-weight:500;color:var(--muted-foreground);display:flex;align-items:center;">+254</span><input class="form-input" style="border-radius:0 8px 8px 0;" type="text" id="editPhone" value="' + escapeAttr(profile.phone ? profile.phone.replace(/^\+254/, '') : '') + '" maxlength="9" placeholder="712345678" oninput="if(window.checkChanges) checkChanges()"></div></div>' : '') +
+            '</div>' +
+            '<div class="flex-row gap-3 mt-3 profile-edit-actions">' +
+              '<button id="btnSaveProfile" class="btn btn-primary" onclick="saveProfile()" style="opacity:0.5;cursor:not-allowed;" disabled>Save Changes</button>' +
+              '<button class="btn" onclick="toggleEdit(false)">Cancel</button>' +
+            '</div>' +
+          '</div>';
+
+        const driverReadOnly =
+          user.role === 'driver'
+            ? '<div class="card card-padded mt-3">' +
+                '<h3 class="font-bold mb-3">Ambulance Assignment</h3>' +
+                '<div class="info-grid">' +
+                  '<div class="info-item"><span class="info-label">License:</span><span class="info-value">' + escapeHtml((profile.license_number || '—').toUpperCase()) + '</span></div>' +
+                  '<div class="info-item"><span class="info-label">Plate:</span><span class="info-value">' + escapeHtml((profile.ambulance_registration || '—').toUpperCase()) + '</span></div>' +
+                  '<div class="info-item"><span class="info-label">Type:</span><span class="info-value">' + escapeHtml(profile.ambulance_type || '—') + '</span></div>' +
+                  '<div class="info-item"><span class="info-label">Verification:</span><span class="info-value" style="text-transform: capitalize;">' + escapeHtml(profile.verification_status || '—') + '</span></div>' +
+                '</div>' +
+              '</div>'
+            : '';
+
+        const accountManagement =
+          user.role !== 'admin'
+            ? '<div class="card card-padded mt-3" style="border:1px solid hsl(0,85%,55%,0.35);background:hsl(0,85%,55%,0.02);">' +
+                '<h3 class="font-bold mb-2 account-deletion-heading"><span class="material-symbols-outlined">warning</span> Account Deletion</h3>' +
+                '<p class="text-sm text-muted">Permanently delete your account and all associated data</p>' +
+                '<div class="mt-3">' +
+                  '<button class="btn btn-emergency" style="background:var(--destructive);" onclick="deleteAccount()"><span class="material-symbols-outlined" style="width:16px;height:16px;">delete</span> Delete Account</button>' +
+                '</div>' +
+              '</div>'
+            : '<div class="card card-padded mt-3">' +
+                '<h3 class="font-bold mb-2">Account Protection</h3>' +
+                '<p class="text-sm text-muted">Administrator accounts cannot be deleted for system safety.</p>' +
+              '</div>';
+
+        // Show pending preview if user selected a new avatar, otherwise show saved image
+        let avatarDisplaySrc = profile.profile_image;
+        if (editing && pendingAvatarPreviewUrl) {
+          avatarDisplaySrc = pendingAvatarPreviewUrl;
+        }
+        const finalAvatarSrc = avatarDisplaySrc ? (String(avatarDisplaySrc).startsWith('blob:') ? avatarDisplaySrc : safeAssetUrl(avatarDisplaySrc)) : '';
+        const avatarImg = finalAvatarSrc ? '<img src="'+escapeAttr(finalAvatarSrc)+'" alt="" style="width:100%;height:100%;object-fit:cover;">' : avatar;
+        
+        document.getElementById('app').innerHTML =
+          renderSidebar(user.role, 'settings.html') +
+          '<div class="main-area">' + renderTopbar([]) +
+          '<div class="content"><div class="space-y-6">' +
+            '<div><h1 class="page-title">My Profile</h1><p class="page-subtitle">' + roleLabel + '</p></div>' +
+            '<div class="card card-padded">' +
+              '<div class="profile-header">' +
+                '<div class="profile-header-info">' +
+                  '<div style="position:relative;width:64px;height:64px;border-radius:16px;background:var(--muted);display:flex;align-items:center;justify-content:center;font-weight:800;flex-shrink:0;overflow:hidden;box-shadow:0 4px 12px rgba(0,0,0,0.1);">' +
+                    avatarImg + 
+                    (editing ? '<label for="avatarUpload" style="position:absolute;inset:0;background:rgba(0,0,0,0.4);display:flex;align-items:center;justify-content:center;color:#fff;opacity:0;cursor:pointer;transition:opacity 0.2s;" onmouseover="this.style.opacity=1" onmouseout="this.style.opacity=0">' +
+                      '<span class="material-symbols-outlined" style="width:20px;height:20px;">photo_camera</span>' +
+                    '</label>' +
+                    '<input type="file" id="avatarUpload" style="display:none;" accept="image/jpeg, image/png, image/webp" onchange="uploadAvatar(this)">' : '') +
+                  '</div>' +
+                  '<div>' +
+                    '<p class="font-bold" style="font-size:18px;">' + escapeHtml(profile.full_name || user.name || '') + '</p>' +
+                    '<p class="text-sm text-muted" style="display:flex;align-items:center;gap:6px;"><span class="material-symbols-outlined" style="font-size:1.2em;">shield</span> ' + roleLabel + '</p>' +
+                  '</div>' +
+                '</div>' +
+                '<button class="btn btn-primary btn-sm profile-edit-btn" onclick="toggleEdit()">' + (editing ? 'Close Edit' : 'Edit Profile') + '</button>' +
+              '</div>' +
+              '<div class="mt-3">' +
+                '<div style="display:' + (editing ? 'none' : '') + '">' + viewSection + '</div>' +
+                editSection +
+              '</div>' +
+            '</div>' +
+            driverReadOnly +
+            '<div class="card card-padded" id="pwCard">' +
+              '<h3 class="font-bold mb-2" style="display:flex;align-items:center;gap:8px;"><span class="material-symbols-outlined" style="color:var(--warning);width:20px;height:20px;">key</span> Change Password</h3>' +
+              '<p class="text-sm text-muted mb-3">Update your account password with email verification.</p>' +
+              '<!-- Step 1: Enter passwords -->' +
+              '<div id="pwStep1" class="profile-pw-step active">' +
+                '<div class="form-group"><label>Current Password</label><div class="password-wrapper"><input class="form-input" type="password" id="curPass" placeholder="Enter current password"><button type="button" class="password-toggle" onclick="togglePassword(this, \'curPass\')"><span class="material-symbols-outlined">visibility</span></button></div></div>' +
+                '<div class="grid-2">' +
+                  '<div class="form-group"><label>New Password</label><div class="password-wrapper"><input class="form-input" type="password" id="newPass" placeholder="Min 6 characters"><button type="button" class="password-toggle" onclick="togglePassword(this, \'newPass\')"><span class="material-symbols-outlined">visibility</span></button></div></div>' +
+                  '<div class="form-group"><label>Confirm Password</label><div class="password-wrapper"><input class="form-input" type="password" id="confirmPass" placeholder="Re-enter new password"><button type="button" class="password-toggle" onclick="togglePassword(this, \'confirmPass\')"><span class="material-symbols-outlined">visibility</span></button></div></div>' +
+                '</div>' +
+                '<div class="mt-3"><button class="btn btn-primary" id="pwSendOtpBtn" onclick="pwSendOtp()"><span class="material-symbols-outlined" style="width:16px;height:16px;">verified_user</span> Verify & Change Password</button></div>' +
+              '</div>' +
+              '<!-- Step 2: OTP verification -->' +
+              '<div id="pwStep2" class="profile-pw-step">' +
+                '<div class="profile-pw-step-header">' +
+                  '<div class="step-icon step-icon-verify"><span class="material-symbols-outlined">mark_email_read</span></div>' +
+                  '<h4>Verify Your Identity</h4>' +
+                  '<p>We sent a 6-digit code to your email</p>' +
+                  '<div class="profile-otp-email-badge" id="pwOtpEmailBadge"><span class="material-symbols-outlined">mail</span> <span id="pwMaskedEmail"></span></div>' +
+                '</div>' +
+                '<div class="profile-otp-container" id="pwOtpContainer"></div>' +
+                '<div id="pwOtpError" class="alert-error" style="display:none;text-align:center;margin:8px 0;"></div>' +
+                '<div class="profile-pw-btn-row">' +
+                  '<button class="btn" style="border:1px solid var(--border);background:transparent;" onclick="pwCancelOtp()">Cancel</button>' +
+                  '<button class="btn btn-primary" id="pwVerifyOtpBtn" onclick="pwVerifyOtp()"><span class="material-symbols-outlined" style="width:16px;height:16px;">check</span> Verify & Save</button>' +
+                '</div>' +
+                '<div class="profile-pw-resend" id="pwResendText"></div>' +
+              '</div>' +
+              '<!-- Step 3: Success -->' +
+              '<div id="pwStep3" class="profile-pw-step">' +
+                '<div class="profile-pw-step-header">' +
+                  '<div class="step-icon step-icon-success"><span class="material-symbols-outlined">check_circle</span></div>' +
+                  '<h4 style="color:var(--success);">Password Changed!</h4>' +
+                  '<p>Your password has been updated successfully.</p>' +
+                '</div>' +
+              '</div>' +
+            '</div>' +
+            accountManagement +
+          '</div></div></div>';
+if (editing && window.checkChanges) window.checkChanges();
+      }
+
+      let pendingAvatarFile = null;
+      let pendingAvatarPreviewUrl = null;
+
+      window.toggleEdit = async function(force) {
+        editing = typeof force === 'boolean' ? force : !editing;
+        // On cancel, discard pending avatar
+        if (!editing) {
+          pendingAvatarFile = null;
+          if (pendingAvatarPreviewUrl) {
+            URL.revokeObjectURL(pendingAvatarPreviewUrl);
+            pendingAvatarPreviewUrl = null;
+          }
+        }
+        render();
+      };
+
+      window.togglePassword = function(btn, id) {
+        const input = document.getElementById(id);
+        if (!input) return;
+        if (input.type === 'password') {
+          input.type = 'text';
+          btn.innerHTML = '<span class="material-symbols-outlined">visibility_off</span>';
+        } else {
+          input.type = 'password';
+          btn.innerHTML = '<span class="material-symbols-outlined">visibility</span>';
+        }
+};
+
+      window.checkChanges = function() {
+        const btn = document.getElementById('btnSaveProfile');
+        if (!btn) return;
+        const email = (document.getElementById('editEmail')?.value || '').trim();
+        const phoneEl = document.getElementById('editPhone');
+        const phone = phoneEl ? phoneEl.value.trim() : '';
+        const currentPhone = profile.phone ? profile.phone.replace(/^\+254/, '') : '';
+        
+        const hasChanges = (email !== (profile.email || '')) || (phone !== currentPhone) || (pendingAvatarFile !== null);
+        btn.disabled = !hasChanges;
+        btn.style.opacity = hasChanges ? '1' : '0.5';
+        btn.style.cursor = hasChanges ? 'pointer' : 'not-allowed';
+      };
+
+      window.saveProfile = async function() {
+        const saveBtn = document.getElementById('btnSaveProfile');
+        if (saveBtn) {
+            saveBtn.disabled = true;
+            saveBtn.innerHTML = '<span class="profile-btn-spinner"></span> Saving...';
+        }
+        function restoreBtn() {
+            if (saveBtn) {
+                saveBtn.disabled = false;
+                saveBtn.innerHTML = 'Save Changes';
+            }
+        }
+
+        const email = (document.getElementById('editEmail')?.value || '').trim();
+        const phoneEl = document.getElementById('editPhone');
+        const phone = phoneEl ? phoneEl.value.trim() : '';
+
+        if (!email) {
+          showToast('Error', 'Please enter a valid email address');
+          restoreBtn();
+          return;
+        }
+        if (!email.includes('@')) {
+          showToast('Error', 'Please enter a valid email containing an "@" symbol.');
+          restoreBtn();
+          return;
+        }
+        if (user.role !== 'admin') {
+          if (!phone || !/^\d{9}$/.test(phone)) {
+            showToast('Error', 'Please enter exactly 9 digits for the phone number.');
+            restoreBtn();
+            return;
+          }
+        }
+        
+        // Re-attach +254 prefix before sending to API
+        const fullPhone = user.role !== 'admin' ? '+254' + phone : '';
+
+        // Upload pending avatar first (if any)
+        if (pendingAvatarFile) {
+          try {
+            const formData = new FormData();
+            formData.append('avatar', pendingAvatarFile);
+            const avatarHeaders = { 'X-Requested-With': 'XMLHttpRequest' };
+            if (window.aidfleetGetCsrfToken) {
+              avatarHeaders['X-CSRF-Token'] = await window.aidfleetGetCsrfToken();
+            }
+            const avatarRes = await fetch(window.APP_ROOT + 'api/user/upload_avatar.php', {
+              method: 'POST',
+              credentials: 'include',
+              headers: avatarHeaders,
+              body: formData
+            });
+            const avatarJson = await avatarRes.json();
+            if (avatarJson.success) {
+              if (typeof _aidfleetUserCache !== 'undefined' && _aidfleetUserCache) {
+                _aidfleetUserCache.profile_image = avatarJson.profile_image;
+              }
+            } else {
+              showToast('Error', avatarJson.message || 'Failed to upload profile picture.', 'error');
+            }
+          } catch(e) {
+            showToast('Error', 'Network error during avatar upload.', 'error');
+            restoreBtn();
+            return;
+          }
+          pendingAvatarFile = null;
+          if (pendingAvatarPreviewUrl) { URL.revokeObjectURL(pendingAvatarPreviewUrl); pendingAvatarPreviewUrl = null; }
+        }
+
+        const r = await apiFetch(window.APP_ROOT + 'api/profile/update.php', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ email, phone: fullPhone }),
+        });
+        
+        function showSettingsOtpModal(type, targetStr, onVerify, onCancel) {
+          var existing = document.getElementById('settingsOtpModal');
+          if (existing) existing.remove();
+
+          var isEmail = type === 'email';
+          var accent = isEmail ? '#10b981' : '#3b82f6';
+          var icon = isEmail ? 'mail' : 'smartphone';
+          var title = isEmail ? 'Verify Your Email' : 'Verify Your Phone';
+          var desc = isEmail ? 'Enter the 6-digit code sent to your new email address' : 'Enter the 6-digit code sent to your new phone number';
+
+          var backdrop = document.createElement('div');
+          backdrop.id = 'settingsOtpModal';
+          backdrop.style.cssText = 'position:fixed;inset:0;background:rgba(15,23,42,0.85);display:flex;align-items:center;justify-content:center;z-index:10000;backdrop-filter:blur(4px);animation:fadeIn 0.2s ease;';
+
+          var inputsHtml = '';
+          for (var i = 0; i < 6; i++) {
+            inputsHtml += '<input type="text" maxlength="1" class="otp-digit-input" data-idx="' + i + '" inputmode="numeric" style="width:44px;height:52px;text-align:center;font-size:22px;font-weight:700;border-radius:10px;border:2px solid rgba(255,255,255,0.15);background:rgba(15,23,42,0.6);color:#f1f5f9;outline:none;">';
+          }
+
+          backdrop.innerHTML =
+            '<div style="background:rgba(30,41,59,0.95);border:1px solid rgba(255,255,255,0.1);border-radius:16px;padding:32px;max-width:400px;width:90%;box-shadow:0 24px 48px rgba(0,0,0,0.4);position:relative;text-align:center;">' +
+              '<button id="sOtpClose" style="position:absolute;top:16px;left:16px;background:none;border:none;color:#94a3b8;cursor:pointer;"><span class="material-symbols-outlined" style="width:18px;height:18px;">arrow_back</span></button>' +
+              '<div style="width:56px;height:56px;border-radius:50%;background:rgba(255,255,255,0.1);color:' + accent + ';display:flex;align-items:center;justify-content:center;margin:0 auto 16px;"><span class="material-symbols-outlined" style="width:28px;height:28px;font-size:28px;">' + icon + '</span></div>' +
+              '<h3 style="color:#f1f5f9;font-size:20px;font-weight:700;margin:0 0 8px;">' + title + '</h3>' +
+              '<p style="color:#94a3b8;font-size:14px;margin:0;">' + desc + '</p>' +
+              '<p style="color:#e2e8f0;font-size:15px;font-weight:600;margin:4px 0 20px;">' + escapeHtml(targetStr) + '</p>' +
+              '<div id="sOtpInputs" style="display:flex;gap:8px;justify-content:center;margin-bottom:20px;">' + inputsHtml + '</div>' +
+              '<div id="sOtpError" class="alert-error" style="display:none;font-size:13px;margin-bottom:12px;padding:8px;"></div>' +
+              '<button id="sOtpVerifyBtn" class="otp-verify-btn" style="background:' + accent + ';"><span class="material-symbols-outlined">verified_user</span><span>Verify</span></button>' +
+              '<div style="text-align:center;margin-top:16px;">' +
+                '<p id="sOtpCountdown" style="color:#64748b;font-size:13px;margin:0;display:flex;align-items:center;justify-content:center;gap:4px;"><span class="material-symbols-outlined" style="font-size:1.2em;">schedule</span> Resend code in <span id="sOtpTimer">60</span>s</p>' +
+                '<button id="sOtpResendBtn" type="button" style="display:none;background:none;border:none;color:' + accent + ';font-size:13px;cursor:pointer;margin-top:4px;padding:4px 8px;border-radius:6px;transition:background 0.2s;" onmouseover="this.style.background=\'rgba(255,255,255,0.06)\'" onmouseout="this.style.background=\'none\'">' +
+                  '<span class="material-symbols-outlined inline-icon">refresh</span> Resend Verification Code' +
+                '</button>' +
+              '</div>' +
+            '</div>';
+
+          document.body.appendChild(backdrop);
+          var inputs = backdrop.querySelectorAll('.otp-digit-input');
+          inputs.forEach(function(inp, idx) {
+            inp.addEventListener('input', function() {
+              if (this.value && !/^\d$/.test(this.value)) { this.value = ''; return; }
+              if (this.value && idx < 5) inputs[idx + 1].focus();
+            });
+            inp.addEventListener('keydown', function(e) {
+              if (e.key === 'Backspace' && !this.value && idx > 0) inputs[idx - 1].focus();
+            });
+            inp.addEventListener('paste', function(e) {
+              e.preventDefault();
+              var pasted = e.clipboardData.getData('text').replace(/\D/g, '').slice(0, 6);
+              pasted.split('').forEach(function(ch, j) { if (inputs[j]) inputs[j].value = ch; });
+              var focusIdx = Math.min(pasted.length, 5);
+              if(inputs[focusIdx]) inputs[focusIdx].focus();
+            });
+          });
+          setTimeout(function(){ if(inputs[0]) inputs[0].focus(); }, 150);
+
+          var countdownEl = document.getElementById('sOtpCountdown');
+          var resendBtn = document.getElementById('sOtpResendBtn');
+          var timerEl = document.getElementById('sOtpTimer');
+          var timeLeft = 60;
+          var timerInterval;
+
+          function startTimer() {
+            clearInterval(timerInterval);
+            timeLeft = 60;
+            if (timerEl) timerEl.textContent = timeLeft;
+            if (countdownEl) countdownEl.style.display = 'flex';
+            if (resendBtn) resendBtn.style.display = 'none';
+
+            timerInterval = setInterval(function() {
+              timeLeft--;
+              if (timerEl) timerEl.textContent = timeLeft;
+              if (timeLeft <= 0) {
+                clearInterval(timerInterval);
+                if (countdownEl) countdownEl.style.display = 'none';
+                if (resendBtn) resendBtn.style.display = 'inline-block';
+              }
+            }, 1000);
+          }
+
+          var verifyBtn = document.getElementById('sOtpVerifyBtn');
+          var lockTimerInterval = null;
+
+          function setVerifyLocked(locked, lockedUntil) {
+            if (!locked) return;
+            verifyBtn.disabled = true;
+            clearInterval(lockTimerInterval);
+            verifyBtn.innerHTML = '<span class="profile-btn-spinner"></span><span>Refreshing...</span>';
+            if (lockedUntil) {
+              lockTimerInterval = setInterval(function() {
+                if (Date.now() >= lockedUntil * 1000) {
+                  clearInterval(lockTimerInterval);
+                  verifyBtn.disabled = false;
+                  verifyBtn.innerHTML = '<span class="material-symbols-outlined">verified_user</span><span>Verify</span>';
+                }
+              }, 1000);
+            }
+          }
+
+          verifyBtn.onclick = async function() {
+            if (verifyBtn.disabled) return;
+            var code = Array.from(inputs).map(function(i){ return i.value; }).join('');
+            if (code.length < 6) {
+              var err = document.getElementById('sOtpError');
+              err.textContent = 'Please enter the full 6-digit code';
+              err.style.display = 'block';
+              return;
+            }
+            document.getElementById('sOtpError').style.display = 'none';
+            verifyBtn.disabled = true;
+            verifyBtn.innerHTML = '<span class="profile-btn-spinner"></span><span>Verifying...</span>';
+
+            var onError = function(msg, locked, lockedUntil) {
+              var errEl = document.getElementById('sOtpError');
+              errEl.textContent = msg || 'Invalid code';
+              errEl.style.display = 'block';
+              if (locked && lockedUntil) {
+                setVerifyLocked(true, lockedUntil);
+              } else {
+                verifyBtn.disabled = false;
+                verifyBtn.innerHTML = '<span class="material-symbols-outlined">verified_user</span><span>Verify</span>';
+              }
+            };
+            var onSuccess = function() {
+              clearInterval(timerInterval);
+              clearInterval(lockTimerInterval);
+              backdrop.remove();
+            };
+
+            await onVerify(code, onError, onSuccess);
+          };
+
+          startTimer();
+
+          document.getElementById('sOtpClose').onclick = function() {
+            clearInterval(timerInterval);
+            backdrop.remove();
+            if (onCancel) onCancel();
+          };
+
+          if (resendBtn) {
+            resendBtn.onclick = async function() {
+              this.disabled = true;
+              this.innerHTML = '<span class="profile-btn-spinner"></span> Resending...';
+
+              const email = (document.getElementById('editEmail')?.value || '').trim();
+              const phoneEl = document.getElementById('editPhone');
+              const phone = phoneEl ? phoneEl.value.trim() : '';
+              const fullPhone = user.role !== 'admin' ? '+254' + phone : '';
+
+              const res = await apiFetch(window.APP_ROOT + 'api/profile/update.php', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ email, phone: fullPhone })
+              });
+
+              if (res && res.message && res.message.startsWith('OTP_REQUIRED')) {
+                showToast('Code Resent', 'A new verification code has been sent.', 'success');
+                clearInterval(lockTimerInterval);
+                verifyBtn.disabled = false;
+                verifyBtn.innerHTML = '<span class="material-symbols-outlined">verified_user</span><span>Verify</span>';
+                startTimer();
+                this.disabled = false;
+                this.innerHTML = '<span class="material-symbols-outlined inline-icon">refresh</span> Resend Verification Code';
+              } else {
+                showToast('Error', res.message || 'Failed to resend code.', 'error');
+                this.disabled = false;
+                this.innerHTML = '<span class="material-symbols-outlined inline-icon">refresh</span> Resend Verification Code';
+              }
+            };
+          }
+        }
+
+        function handleOtpFlow(res) {
+            if (res.message === 'OTP_REQUIRED_EMAIL') {
+                showSettingsOtpModal('email', res.email, async function(code, onError, onSuccess) {
+                    const vRes = await apiFetch(window.APP_ROOT + 'api/profile/verify_update.php', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ otp: code, type: 'email' })
+                    });
+                    if (vRes.success) {
+                        onSuccess();
+                        if (vRes.message === 'OTP_REQUIRED_PHONE') {
+                            handleOtpFlow(vRes); // Chain to phone
+                        } else {
+                            if (vRes.user) _aidfleetUserCache = vRes.user;
+                            profile = await loadProfile();
+                            editing = false;
+                            showToast('Success', 'Profile updated successfully.', 'success');
+                            render();
+                        }
+                    } else {
+                        onError(vRes.message || 'Invalid code.', vRes.locked, vRes.locked_until);
+                    }
+                }, async function() {
+                    showToast('Verification Cancelled', 'Profile update cancelled.', 'warning');
+                    profile = await loadProfile();
+                    if (window.checkChanges) window.checkChanges();
+                    render();
+                });
+            } else if (res.message === 'OTP_REQUIRED_PHONE') {
+                showSettingsOtpModal('phone', res.phone, async function(code, onError, onSuccess) {
+                    const vRes = await apiFetch(window.APP_ROOT + 'api/profile/verify_update.php', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ otp: code, type: 'phone' })
+                    });
+                    if (vRes.success) {
+                        onSuccess();
+                        if (vRes.user) _aidfleetUserCache = vRes.user;
+                        profile = await loadProfile();
+                        editing = false;
+                        showToast('Success', 'Profile updated successfully.', 'success');
+                        render();
+                    } else {
+                        onError(vRes.message || 'Invalid code.', vRes.locked, vRes.locked_until);
+                    }
+                }, async function() {
+                    showToast('Verification Cancelled', 'Profile update cancelled.', 'warning');
+                    profile = await loadProfile();
+                    if (window.checkChanges) window.checkChanges();
+                    render();
+                });
+            }
+        }
+
+        if (r && r.message && r.message.startsWith('OTP_REQUIRED')) {
+            restoreBtn();
+            await handleOtpFlow(r);
+            return;
+        }
+
+        restoreBtn();
+        if (!r || !r.success) {
+          showToast('Error', (r && r.message) ? r.message : 'Could not update profile...');
+          return;
+        }
+
+        if (r.user) _aidfleetUserCache = r.user;
+        profile = await loadProfile();
+        editing = false;
+        showToast('Success', 'Profile updated.', 'success');
+        render();
+      };
+      
+      window.uploadAvatar = function(input) {
+        if (!input.files || input.files.length === 0) return;
+        const file = input.files[0];
+        if (file.size > 5 * 1024 * 1024) {
+          showToast('Error', 'File too large. Max 5MB.', 'error');
+          return;
+        }
+        const allowed = ['image/jpeg', 'image/png', 'image/webp'];
+        if (!allowed.includes(file.type)) {
+          showToast('Error', 'Only JPG, PNG, and WEBP files are allowed.', 'error');
+          return;
+        }
+        
+        // Store file for upload on Save — show local preview only
+        pendingAvatarFile = file;
+        if (pendingAvatarPreviewUrl) URL.revokeObjectURL(pendingAvatarPreviewUrl);
+        pendingAvatarPreviewUrl = URL.createObjectURL(file);
+        showToast('Preview', 'Photo selected. Click Save Changes to apply.', 'info');
+        render();
+        if (window.checkChanges) window.checkChanges();
+      };
+
+      // --- OTP Password Change Flow ---
+      let _pwCurPass = '', _pwNewPass = '', _pwResendTimer = 0, _pwTimerInterval = null, _pwLockTimerInterval = null;
+
+      function pwStartLockCountdown(lockedUntil) {
+        clearInterval(_pwLockTimerInterval);
+        var unlockAt = parseInt(lockedUntil, 10) * 1000;
+        var pwBtn = document.getElementById('pwVerifyOtpBtn');
+        var errEl = document.getElementById('pwOtpError');
+        var resendTextEl = document.getElementById('pwResendText');
+
+        if (pwBtn) {
+          pwBtn.disabled = true;
+          pwBtn.style.opacity = '0.5';
+          pwBtn.style.cursor = 'not-allowed';
+          pwBtn.innerHTML = '<span class="profile-btn-spinner"></span><span>Refreshing...</span>';
+        }
+        if (resendTextEl) {
+          resendTextEl.style.pointerEvents = 'none';
+          resendTextEl.style.opacity = '0.5';
+        }
+
+        function tick() {
+          var secondsLeft = Math.max(0, Math.ceil((unlockAt - Date.now()) / 1000));
+          if (errEl) {
+            errEl.textContent = 'Too many failed attempts. Please request a new code after ' + secondsLeft + ' seconds';
+            errEl.style.display = 'block';
+          }
+          if (pwBtn) {
+            pwBtn.disabled = true;
+            pwBtn.innerHTML = '<span class="profile-btn-spinner"></span><span>Refreshing...</span>';
+          }
+          if (secondsLeft <= 0) {
+            clearInterval(_pwLockTimerInterval);
+            _pwLockTimerInterval = null;
+            if (pwBtn) {
+              pwBtn.disabled = false;
+              pwBtn.style.opacity = '1';
+              pwBtn.style.cursor = 'pointer';
+              if (pwBtn.dataset.origHtml) {
+                pwBtn.innerHTML = pwBtn.dataset.origHtml;
+              } else {
+                pwBtn.innerHTML = '<span class="material-symbols-outlined" style="width:16px;height:16px;">check</span> Verify & Save';
+              }
+            }
+            if (resendTextEl) {
+              resendTextEl.style.pointerEvents = 'auto';
+              resendTextEl.style.opacity = '1';
+            }
+            if (errEl) {
+              errEl.style.display = 'none';
+            }
+            pwUpdateResendText();
+          }
+        }
+        tick();
+        _pwLockTimerInterval = setInterval(tick, 1000);
+      }
+
+      function pwShowStep(n) {
+        ['pwStep1','pwStep2','pwStep3'].forEach(function(id) {
+          var el = document.getElementById(id);
+          if (el) { el.classList.remove('active'); }
+        });
+        var target = document.getElementById('pwStep' + n);
+        if (target) { target.classList.add('active'); }
+}
+
+      function pwBuildOtpInputs() {
+        var container = document.getElementById('pwOtpContainer');
+        if (!container) return;
+        container.innerHTML = '';
+        for (var i = 0; i < 6; i++) {
+          var input = document.createElement('input');
+          input.type = 'text'; input.inputMode = 'numeric'; input.maxLength = 1;
+          input.className = 'profile-otp-input'; input.dataset.index = i;
+          (function(idx) {
+            input.addEventListener('input', function() {
+              if (this.value && !/^\d$/.test(this.value)) { this.value = ''; return; }
+              if (this.value && idx < 5) container.children[idx + 1].focus();
+            });
+            input.addEventListener('keydown', function(e) {
+              if (e.key === 'Backspace' && !this.value && idx > 0) container.children[idx - 1].focus();
+            });
+            input.addEventListener('paste', function(e) {
+              e.preventDefault();
+              var pasted = e.clipboardData.getData('text').replace(/\D/g, '').slice(0, 6);
+              pasted.split('').forEach(function(ch, j) { if (container.children[j]) container.children[j].value = ch; });
+              var focusIdx = Math.min(pasted.length, 5);
+              container.children[focusIdx].focus();
+            });
+          })(i);
+          container.appendChild(input);
+        }
+      }
+
+      function pwGetOtp() {
+        var inputs = document.getElementById('pwOtpContainer')?.querySelectorAll('input') || [];
+        return Array.from(inputs).map(function(inp) { return inp.value; }).join('');
+      }
+
+      function pwStartResendTimer() {
+        _pwResendTimer = 60;
+        pwUpdateResendText();
+        clearInterval(_pwTimerInterval);
+        _pwTimerInterval = setInterval(function() {
+          _pwResendTimer--;
+          pwUpdateResendText();
+          if (_pwResendTimer <= 0) clearInterval(_pwTimerInterval);
+        }, 1000);
+      }
+
+      function pwUpdateResendText() {
+        var el = document.getElementById('pwResendText');
+        if (!el) return;
+        if (_pwLockTimerInterval) {
+          el.style.pointerEvents = 'none';
+          el.style.opacity = '0.5';
+          return;
+        }
+        if (_pwResendTimer > 0) {
+          el.innerHTML = 'Resend code in <strong>' + _pwResendTimer + 's</strong>';
+        } else {
+          el.innerHTML = '<a href="#" onclick="pwResendOtp();return false;">Resend Code</a>';
+        }
+      }
+
+      function pwSetBtnLoading(btnId, loading, loadingText) {
+        var btn = document.getElementById(btnId);
+        if (!btn) return;
+        if (loading) {
+          btn.disabled = true;
+          btn.dataset.origHtml = btn.innerHTML;
+          btn.innerHTML = '<span class="profile-btn-spinner"></span> ' + (loadingText || 'Please wait...');
+        } else {
+          btn.disabled = false;
+          if (btn.dataset.origHtml) btn.innerHTML = btn.dataset.origHtml;
+}
+      }
+
+      window.pwSendOtp = async function() {
+        var cur = document.getElementById('curPass')?.value || '';
+        var np = document.getElementById('newPass')?.value || '';
+        var cp = document.getElementById('confirmPass')?.value || '';
+
+        if (!cur) { showToast('Error', 'Enter your current password.'); return; }
+        if (np.length < 6) { showToast('Error', 'New password must be at least 6 characters.'); return; }
+        if (np !== cp) { showToast('Error', 'Passwords do not match.'); return; }
+
+        _pwCurPass = cur; _pwNewPass = np;
+        clearInterval(_pwLockTimerInterval);
+        _pwLockTimerInterval = null;
+        pwSetBtnLoading('pwSendOtpBtn', true, 'Sending code...');
+
+        var r = await apiFetch(window.APP_ROOT + 'api/profile/change_password.php', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ action: 'send_otp', current_password: cur, new_password: np }),
+        });
+        pwSetBtnLoading('pwSendOtpBtn', false);
+
+        if (!r || !r.success) {
+          showToast('Error', (r && r.message) ? r.message : 'Could not send verification code.');
+          return;
+        }
+
+        var maskedEl = document.getElementById('pwMaskedEmail');
+        if (maskedEl) maskedEl.textContent = r.masked_email || 'your email';
+
+        showToast('Code Sent', 'Check your email for the verification code.', 'success');
+        pwShowStep(2);
+        pwBuildOtpInputs();
+        pwStartResendTimer();
+        setTimeout(function() {
+          var c = document.getElementById('pwOtpContainer');
+          if (c && c.children[0]) c.children[0].focus();
+        }, 150);
+      };
+
+      window.pwVerifyOtp = async function() {
+        var pwBtn = document.getElementById('pwVerifyOtpBtn');
+        if (pwBtn && pwBtn.disabled) return;
+        var otp = pwGetOtp();
+        if (otp.length < 6) { 
+          var errEl = document.getElementById('pwOtpError');
+          if (errEl) { errEl.textContent = 'Please enter the full 6-digit code'; errEl.style.display = 'block'; }
+          return;
+        }
+        document.getElementById('pwOtpError').style.display = 'none';
+        pwSetBtnLoading('pwVerifyOtpBtn', true, 'Verifying...');
+
+        var r = await apiFetch(window.APP_ROOT + 'api/profile/change_password.php', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ action: 'verify_and_change', current_password: _pwCurPass, new_password: _pwNewPass, otp: otp }),
+        });
+        pwSetBtnLoading('pwVerifyOtpBtn', false);
+
+        if (!r || !r.success) {
+          var errEl = document.getElementById('pwOtpError');
+          if (errEl) { errEl.textContent = (r && r.message) || 'Invalid code'; errEl.style.display = 'block'; }
+          var container = document.getElementById('pwOtpContainer');
+          if (container) { container.style.animation = 'none'; container.offsetHeight; container.style.animation = 'shake 0.4s ease'; }
+          if (r && r.locked && r.locked_until) { pwStartLockCountdown(r.locked_until); return; } if (false) {
+            var pwBtn = document.getElementById('pwVerifyOtpBtn');
+            if (pwBtn) {
+              pwBtn.disabled = true;
+              pwBtn.innerHTML = '<span class="profile-btn-spinner"></span><span>Refreshing...</span>';
+              if (r.locked_until) {
+                var unlockAt = r.locked_until * 1000;
+                var pwLockTimer = setInterval(function() {
+                  if (Date.now() >= unlockAt) {
+                    clearInterval(pwLockTimer);
+                    pwBtn.disabled = false;
+                    if (pwBtn.dataset.origHtml) pwBtn.innerHTML = pwBtn.dataset.origHtml;
+                  }
+                }, 1000);
+              }
+            }
+          }
+          return;
+        }
+
+        showToast('Password Changed', 'Your password has been updated successfully.', 'success');
+        pwShowStep(3);
+        clearInterval(_pwTimerInterval);
+        setTimeout(function() {
+          pwShowStep(1);
+          _pwCurPass = ''; _pwNewPass = '';
+          var cp = document.getElementById('curPass'); if (cp) cp.value = '';
+          var np = document.getElementById('newPass'); if (np) np.value = '';
+          var cfp = document.getElementById('confirmPass'); if (cfp) cfp.value = '';
+        }, 4000);
+      };
+
+      window.pwCancelOtp = function() {
+        clearInterval(_pwLockTimerInterval);
+        _pwLockTimerInterval = null;
+        clearInterval(_pwTimerInterval);
+        _pwCurPass = ''; _pwNewPass = '';
+        pwShowStep(1);
+      };
+
+      window.pwResendOtp = async function() {
+        if (_pwLockTimerInterval) return;
+        pwBuildOtpInputs();
+        pwStartResendTimer();
+        var r = await apiFetch(window.APP_ROOT + 'api/profile/change_password.php', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ action: 'send_otp', current_password: _pwCurPass, new_password: _pwNewPass }),
+        });
+        if (r && r.success) {
+          showToast('Code Resent', 'A new verification code has been sent.', 'success');
+        } else {
+          showToast('Error', (r && r.message) || 'Could not resend code.');
+        }
+      };
+
+      window.deleteAccount = function() {
+        if (user.role === 'admin') return;
+        showConfirmModal(
+          'Delete Account',
+          'Are you sure you want to permanently delete your account? All your data will be lost and this action cannot be undone.',
+          'Delete My Account',
+          async function() {
+            // Show loading state on the confirm button
+            var okBtn = document.getElementById('confirmModalOk');
+            var cancelBtn = document.getElementById('confirmModalCancel');
+            if (okBtn) {
+              okBtn.disabled = true;
+              okBtn.innerHTML = '<span class="profile-btn-spinner"></span> Deleting...';
+            }
+            if (cancelBtn) cancelBtn.disabled = true;
+
+            const pApi = apiFetch(window.APP_ROOT + 'api/profile/delete.php', { method: 'POST' });
+            const pDelay = new Promise(res => setTimeout(res, 5000));
+            const [r] = await Promise.all([pApi, pDelay]);
+            
+            if (!r || !r.success) {
+              // Restore buttons on error
+              if (okBtn) {
+                okBtn.disabled = false;
+                okBtn.innerHTML = '<span class="material-symbols-outlined" style="width:16px;height:16px;">delete</span> Delete My Account';
+}
+              if (cancelBtn) cancelBtn.disabled = false;
+              showToast('Error', (r && r.message) ? r.message : 'Could not delete account...');
+              return;
+            }
+
+            // Show success state briefly
+            if (okBtn) {
+              okBtn.innerHTML = '<span class="material-symbols-outlined inline-icon">check_circle</span> Deleted successfully';
+              okBtn.style.background = 'var(--success)';
+            }
+            setTimeout(function() {
+              window.location.href = '../auth/login.html?deleted=1';
+            }, 1500);
+          }
+        );
+      };
+
+      // Custom themed confirmation modal
+      function showConfirmModal(title, message, confirmText, onConfirm) {
+        var existing = document.getElementById('confirmModal');
+        if (existing) existing.remove();
+        var overlay = document.createElement('div');
+        overlay.id = 'confirmModal';
+        overlay.className = 'confirm-modal-overlay';
+        overlay.innerHTML =
+          '<div class="confirm-modal">' +
+            '<div class="confirm-modal-icon"><span class="material-symbols-outlined">warning</span></div>' +
+            '<h3>' + escapeHtml(title) + '</h3>' +
+            '<p>' + escapeHtml(message) + '</p>' +
+            '<div class="confirm-modal-actions">' +
+              '<button class="btn" id="confirmModalCancel" style="border:1px solid var(--border);background:var(--card);">Cancel</button>' +
+              '<button class="btn btn-emergency" id="confirmModalOk"><span class="material-symbols-outlined" style="width:16px;height:16px;">delete</span> ' + escapeHtml(confirmText) + '</button>' +
+            '</div>' +
+          '</div>';
+        document.body.appendChild(overlay);
+document.getElementById('confirmModalCancel').onclick = function() { overlay.remove(); };
+        overlay.addEventListener('click', function(e) { if (e.target === overlay) overlay.remove(); });
+        document.getElementById('confirmModalOk').onclick = function() { onConfirm(overlay); };
+      }
+
+      profile = await loadProfile();
+      render();
+    })();
+  </script>
+</body>
+</html>
+

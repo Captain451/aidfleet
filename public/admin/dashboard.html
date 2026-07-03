@@ -1,0 +1,107 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>AidFleet - Admin Dashboard</title>
+  <link rel="stylesheet" href="../css/style.css">
+  
+<link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:opsz,wght,FILL,GRAD@20..48,100..700,0..1,-50..200" rel="stylesheet" />
+</head>
+<body>
+  <div class="app-layout" id="app"></div>
+  <script>
+    // Initialize routing base
+    window.APP_ROOT = "../";
+  </script>
+  <script src="../js/data.js"></script>
+  <script>
+
+    (async () => {
+      const user = await requireAuth(['admin']);
+      if (!user) return;
+
+      const [driversRes, logsRes, reqRes, statsRes] = await Promise.all([
+        apiFetch(window.APP_ROOT + 'api/admin/drivers.php'),
+        apiFetch(window.APP_ROOT + 'api/admin/logs.php?limit=5'),
+        apiFetch(window.APP_ROOT + 'api/admin/requests.php'),
+        apiFetch(window.APP_ROOT + 'api/admin/stats.php'),
+      ]);
+
+      const drivers = (driversRes && driversRes.drivers) ? driversRes.drivers : [];
+      const logs = (logsRes && logsRes.logs) ? logsRes.logs : [];
+      const requests = (reqRes && reqRes.requests) ? reqRes.requests : [];
+      const stats = (statsRes && statsRes.stats) ? statsRes.stats : {};
+
+      const totalDrivers = drivers.length;
+      const verifiedDrivers = drivers.filter(d => d.verification_status === 'approved').length;
+      const onlineDrivers = drivers.filter(d => d.availability_status !== 'offline' && d.verification_status === 'approved');
+      const activeRequests = typeof stats.active_requests === 'number'
+        ? stats.active_requests
+        : requests.filter(r => !['completed','cancelled'].includes(r.request_status)).length;
+      const completedRequests = requests.filter(r => r.request_status === 'completed').length;
+      const totalUsers = typeof stats.total_users === 'number' ? stats.total_users : 0;
+
+      let onlineList = '';
+      if (onlineDrivers.length === 0) {
+        onlineList = '<div style="padding:16px;text-align:center;" class="text-sm text-muted">No drivers online</div>';
+      } else {
+        onlineDrivers.forEach(d => {
+          const busy = d.availability_status === 'on_route';
+          onlineList += '<div class="flex-between" style="padding:12px 20px;border-bottom:1px solid var(--border);">' +
+            '<div class="flex-row gap-3"><span class="status-dot ' + (busy ? 'dot-busy' : 'dot-online') + '"></span>' +
+            '<div><p class="text-sm font-medium">' + escapeHtml(d.full_name || 'Driver') + '</p><p class="text-xs text-muted">' + escapeHtml((d.ambulance_registration || '').toUpperCase()) + '</p></div></div>' +
+            '<span class="text-xs font-medium" style="color:' + (busy ? 'var(--warning)' : 'var(--success)') + ';">' + (busy ? 'On Route' : 'Available') + '</span></div>';
+        });
+      }
+
+      let recentLogs = '';
+      logs.forEach(log => {
+        recentLogs += '<div style="padding:12px 20px;border-bottom:1px solid var(--border);">' +
+          '<div class="flex-between"><p class="text-sm font-medium">' + escapeHtml((log.action || '').replace(/_/g, ' ')) + '</p>' +
+          '<span class="text-xs text-muted">' + new Date(log.created_at).toLocaleTimeString() + '</span></div>' +
+          '<p class="text-xs text-muted mt-1">' + escapeHtml(log.details || '') + '</p></div>';
+      });
+
+      let requestRows = '';
+      requests.forEach(r => {
+        requestRows += '<tr><td class="font-mono text-muted text-xs">' + escapeHtml(r.request_id || '') + '</td>' +
+          '<td class="font-medium">' + escapeHtml(r.emergency_type || 'Emergency') + '</td>' +
+          '<td>' + escapeHtml(r.requester_name || '') + '</td>' +
+          '<td>' + getStatusBadge(r.request_status) + '</td>' +
+          '<td class="text-muted">' + escapeHtml(r.driver_name || '—') + '</td>' +
+          '<td class="text-muted">' + new Date(r.request_time).toLocaleDateString() + '</td></tr>';
+      });
+
+      const pendingDrivers = drivers.filter(d => d.verification_status === 'pending').length;
+      const notifications = [];
+      if (pendingDrivers > 0) {
+        notifications.push({ message: '<span class="material-symbols-outlined notif-icon">group</span> ' + pendingDrivers + ' driver' + (pendingDrivers > 1 ? 's' : '') + ' pending verification', time: new Date().toISOString() });
+      }
+      if (activeRequests > 0) {
+        notifications.push({ message: '<span class="material-symbols-outlined notif-icon">emergency</span> ' + activeRequests + ' active emergency request' + (activeRequests > 1 ? 's' : ''), time: new Date().toISOString() });
+      }
+
+      document.getElementById('app').innerHTML =
+        renderSidebar('admin', 'dashboard.html') +
+        '<div class="main-area">' + renderTopbar(notifications) +
+          '<div class="content"><div class="space-y-6">' +
+          '<div><h1 class="page-title">Admin Dashboard</h1><p class="page-subtitle">System overview and monitoring</p></div>' +
+          '<div class="stats-grid stats-grid-4">' +
+            '<div class="stat-card"><div><p class="stat-label">Total Requesters</p><p class="stat-value">' + totalUsers + '</p></div><div class="stat-icon stat-icon-default"><span class="material-symbols-outlined">group</span></div></div>' +
+            '<div class="stat-card"><div><p class="stat-label">Total Drivers</p><p class="stat-value">' + totalDrivers + '</p></div><div class="stat-icon stat-icon-default"><span class="material-symbols-outlined">speed</span></div></div>' +
+            '<div class="stat-card"><div><p class="stat-label">Verified Drivers</p><p class="stat-value">' + verifiedDrivers + '</p></div><div class="stat-icon stat-icon-success"><span class="material-symbols-outlined">check_circle</span></div></div>' +
+            '<div class="stat-card"><div><p class="stat-label">Active Emergencies</p><p class="stat-value">' + activeRequests + '</p></div><div class="stat-icon stat-icon-emergency"><span class="material-symbols-outlined">warning</span></div></div>' +
+          '</div>' +
+          '<div class="grid-2">' +
+            '<div class="card"><div class="card-header"><h3>Online Drivers (' + onlineDrivers.length + ')</h3><span><span class="material-symbols-outlined">emergency_share</span></span></div>' + onlineList + '</div>' +
+            '<div class="card"><div class="card-header"><h3>Recent Activity</h3><span><span class="material-symbols-outlined">schedule</span></span></div>' + (recentLogs || '<div style="padding:16px;text-align:center;" class="text-sm text-muted">No activity yet</div>') + '</div>' +
+          '</div>' +
+          '<div class="card"><div class="card-header"><h3>All Emergency Requests</h3></div>' +
+            '<div style="overflow-x:auto;"><table><thead><tr><th>ID</th><th>Type</th><th>Requester</th><th>Status</th><th>Driver</th><th>Date</th></tr></thead>' +
+            '<tbody>' + requestRows + '</tbody></table></div></div>' +
+        '</div></div></div>';
+})();
+  </script>
+</body>
+</html>

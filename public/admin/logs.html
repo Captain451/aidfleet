@@ -1,0 +1,127 @@
+﻿<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>AidFleet - System Logs</title>
+  <link rel="stylesheet" href="../css/style.css">
+  
+<link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:opsz,wght,FILL,GRAD@20..48,100..700,0..1,-50..200" rel="stylesheet" />
+</head>
+<body>
+  <div class="app-layout" id="app"></div>
+  <script>
+    // Initialize routing base
+    window.APP_ROOT = "../";
+  </script>
+  <script src="../js/data.js"></script>
+  <script>
+    (async () => {
+      const user = await requireAuth(['admin']);
+      if (!user) return;
+
+      const actionColors = {
+        USER_REGISTER: 'badge-en_route',
+        DRIVER_REGISTER: 'badge-en_route',
+        DRIVER_VERIFICATION: 'badge-completed',
+        EMERGENCY_CREATED: 'badge-critical',
+        DRIVER_SELECTED: 'badge-medium',
+        DISPATCH_ACCEPTED: 'badge-en_route',
+        DISPATCH_REJECTED: 'badge-warning',
+        DISPATCH_COMPLETED: 'badge-completed',
+      };
+
+      const logsRes = await apiFetch(window.APP_ROOT + 'api/admin/logs.php?limit=500');
+      const logs = (logsRes && logsRes.logs) ? logsRes.logs : [];
+
+      window.renderLayout = function() {
+        document.getElementById('app').innerHTML =
+          renderSidebar('admin', 'logs.html') +
+          '<div class="main-area">' + renderTopbar([]) +
+          '<div class="content"><div class="space-y-6">' +
+            '<div class="flex-between"><div><h1 class="page-title">System Logs</h1><p class="page-subtitle">Audit trail of all system activities</p></div>' +
+            '<button class="btn btn-secondary" onclick="exportLogs()"><span class="material-symbols-outlined" style="width:16px;height:16px;margin-right:6px;">download</span> Export to CSV</button></div>' +
+            '<div class="filter-row">' +
+              '<div class="search-bar"><span class="search-icon"><span class="material-symbols-outlined">search</span></span><input type="text" id="searchInput" placeholder="Search logs..." oninput="renderLogs()"></div>' +
+              '<select id="roleFilter" class="form-select" style="width:auto;" onchange="renderLogs()">' +
+                '<option value="all">All Roles</option><option value="requester">Requesters</option><option value="driver">Drivers</option><option value="admin">Admins</option><option value="system">System</option>' +
+              '</select>' +
+            '</div>' +
+            '<div class="card"><div style="overflow-x:auto;"><table>' +
+              '<thead><tr><th>Timestamp</th><th>Action</th><th>Actor</th><th>Role</th><th>Details</th></tr></thead>' +
+              '<tbody id="logsTableBody"></tbody></table></div></div>' +
+          '</div></div></div>';
+};
+
+      window.renderLogs = function() {
+        const search = document.getElementById('searchInput') ? document.getElementById('searchInput').value.toLowerCase() : '';
+        const filterRole = document.getElementById('roleFilter') ? document.getElementById('roleFilter').value : 'all';
+
+        const filtered = logs.filter(log => {
+          if (filterRole !== 'all' && log.actor_type !== filterRole) return false;
+          const details = (log.details || '').toLowerCase();
+          const action = (log.action || '').toLowerCase();
+          if (search && !details.includes(search) && !action.includes(search)) return false;
+          return true;
+        });
+
+        let rows = '';
+        filtered.forEach(log => {
+          const badgeClass = actionColors[log.action] || 'badge-medium';
+          const actorLabel = (log.actor_type || 'system') + (log.actor_id ? (' #' + log.actor_id) : '');
+          rows += '<tr>' +
+            '<td class="text-xs font-mono text-muted" style="white-space:nowrap;">' + new Date(log.created_at).toLocaleString() + '</td>' +
+            '<td><span class="badge ' + badgeClass + '">' + escapeHtml((log.action || '').replace(/_/g, ' ')) + '</span></td>' +
+            '<td class="text-sm">' + escapeHtml(actorLabel) + '</td>' +
+            '<td class="text-sm text-muted capitalize">' + escapeHtml(log.actor_type || 'system') + '</td>' +
+            '<td class="text-sm text-muted">' + escapeHtml(log.details || '') + '</td></tr>';
+        });
+        if (filtered.length === 0) {
+          rows = '<tr><td colspan="5" class="text-center text-muted" style="padding:24px;">No logs match your filters</td></tr>';
+        }
+        
+        const tbody = document.getElementById('logsTableBody');
+        if (tbody) tbody.innerHTML = rows;
+      };
+
+      window.exportLogs = function() {
+        const search = document.getElementById('searchInput') ? document.getElementById('searchInput').value.toLowerCase() : '';
+        const filterRole = document.getElementById('roleFilter') ? document.getElementById('roleFilter').value : 'all';
+
+        const filtered = logs.filter(log => {
+          if (filterRole !== 'all' && log.actor_type !== filterRole) return false;
+          const details = (log.details || '').toLowerCase();
+          const action = (log.action || '').toLowerCase();
+          if (search && !details.includes(search) && !action.includes(search)) return false;
+          return true;
+        });
+
+        let csvContent = "data:text/csv;charset=utf-8,";
+        csvContent += "Log ID,Timestamp,Action,Actor ID,Actor Type,Entity Type,Entity ID,Details\n";
+
+        filtered.forEach(log => {
+          const timestamp = new Date(log.created_at).toLocaleString().replace(/,/g, '');
+          const action = (log.action || '').replace(/_/g, ' ');
+          const actorId = log.actor_id || '';
+          const actorType = log.actor_type || 'system';
+          const entityType = log.entity_type || '';
+          const entityId = log.entity_id || '';
+          const details = '"' + (log.details || '').replace(/"/g, '""') + '"';
+          csvContent += `${log.log_id || ''},${timestamp},${action},${actorId},${actorType},${entityType},${entityId},${details}\n`;
+        });
+
+        const encodedUri = encodeURI(csvContent);
+        const link = document.createElement("a");
+        link.setAttribute("href", encodedUri);
+        link.setAttribute("download", "aidfleet_logs_" + new Date().getTime() + ".csv");
+        document.body.appendChild(link);
+        link.click();
+        document.body.removeChild(link);
+      };
+
+      window.renderLayout();
+      window.renderLogs();
+    })();
+  </script>
+</body>
+</html>

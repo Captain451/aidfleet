@@ -1,0 +1,333 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>AidFleet - Drivers</title>
+  <link rel="stylesheet" href="../css/style.css">
+  
+<link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:opsz,wght,FILL,GRAD@20..48,100..700,0..1,-50..200" rel="stylesheet" />
+</head>
+<body>
+  <div class="app-layout" id="app"></div>
+  <script>
+    // Initialize routing base
+    window.APP_ROOT = "../";
+  </script>
+  <script src="../js/data.js"></script>
+  <script>
+    (async () => {
+      const user = await requireAuth(['admin']);
+      if (!user) return;
+
+      let lastToast = null;
+      async function loadDrivers() {
+        try {
+          const r = await apiFetch(window.APP_ROOT + 'api/admin/drivers.php');
+          if (!r || !r.success) {
+            console.error('Failed to load drivers:', r);
+            return [];
+          }
+          return (r && r.drivers) ? r.drivers : [];
+        } catch (e) {
+          console.error('Error loading drivers:', e);
+          return [];
+        }
+      }
+
+      async function render() {
+        const drivers = await loadDrivers();
+        const pending = drivers.filter(d => d.verification_status === 'pending');
+        const approved = drivers.filter(d => d.verification_status === 'approved');
+        const revoked = drivers.filter(d =>
+          d.verification_status === 'rejected' &&
+          typeof d.verification_note === 'string' &&
+          d.verification_note.toLowerCase().includes('temporarily disabled')
+        );
+        const rejectedList = drivers.filter(d => 
+          d.verification_status === 'rejected' &&
+          !(typeof d.verification_note === 'string' && d.verification_note.toLowerCase().includes('temporarily disabled'))
+        );
+
+        let pendingCards = '';
+        if (pending.length > 0) {
+          pending.forEach(d => {
+            const driverId = Number(d.driver_id) || 0;
+            const licenseHref = d.documents_path ? safeAssetUrl(d.documents_path) : '';
+            const medicalHref = d.medical_doc_path ? safeAssetUrl(d.medical_doc_path) : '';
+            const licenseLink = d.documents_path
+              ? '<p class="text-sm mt-1"><strong>Driving License:</strong> <a href="#" onclick="viewDocument(\'' + escapeAttr(licenseHref) + '\', \'Driving License &hyphen; ' + escapeAttr(d.full_name) + '\');return false;" style="color:var(--info);text-decoration:underline;">View</a></p>'
+              : '<p class="text-sm mt-1 text-muted"><strong>Driving License:</strong> Not uploaded</p>';
+            const medicalLink = d.medical_doc_path
+              ? '<p class="text-sm mt-1"><strong>Medical Document:</strong> <a href="#" onclick="viewDocument(\'' + escapeAttr(medicalHref) + '\', \'Medical Certification &hyphen; ' + escapeAttr(d.full_name) + '\');return false;" style="color:var(--info);text-decoration:underline;">View</a></p>'
+              : '<p class="text-sm mt-1 text-muted"><strong>Medical Document:</strong> Not uploaded</p>';
+            pendingCards += '<div class="pending-card">' +
+              '<div class="flex-between">' +
+                '<div><h4 class="font-bold">' + escapeHtml(d.full_name) + '</h4>' +
+                  '<div class="text-sm text-muted mt-1"><p>Email: ' + escapeHtml(d.email) + ' &bull; Phone: ' + escapeHtml(d.phone) + '</p>' +
+                  '<p>License: ' + escapeHtml((d.license_number || '').toUpperCase()) + ' &bull; Plate: ' + escapeHtml((d.ambulance_registration || '').toUpperCase()) + '</p>' +
+                  '<p>Type: ' + escapeHtml(d.ambulance_type) + '</p>' +
+                  licenseLink +
+                  medicalLink +
+                  '</div></div>' +
+                '<div class="flex-row gap-2">' +
+                  '<button class="btn btn-success btn-sm" onclick="verifyDriver(this, ' + driverId + ')"><span class="material-symbols-outlined inline-icon">check</span> Approve</button>' +
+                  '<button class="btn btn-outline-destructive btn-sm" onclick="rejectDriver(' + driverId + ')">Reject</button>' +
+                '</div>' +
+              '</div></div>';
+          });
+        }
+
+        let pendingSection = pending.length > 0
+          ? '<div><h3 class="section-title section-title-flex mb-3">🛡 Pending Verification (' + pending.length + ')</h3><div class="space-y-3">' + pendingCards + '</div></div>'
+          : '<div class="card card-padded text-center"><p class="text-muted">No pending drivers.</p></div>';
+
+        let verifiedRows = '';
+        approved.forEach(d => {
+          const driverId = Number(d.driver_id) || 0;
+          const canRevoke = d.availability_status !== 'on_route';
+          const actionCell = canRevoke
+            ? '<button class="text-xs text-destructive" style="background:none;border:none;cursor:pointer;text-decoration:underline;" onclick="revokeDriver(' + driverId + ')">Temporarily Disable</button>'
+            : '<span class="text-xs text-muted">Active trip</span>';
+          verifiedRows += '<tr>' +
+            '<td><p class="text-sm font-medium">' + escapeHtml(d.full_name) + '</p><p class="text-xs text-muted">' + escapeHtml(d.email) + '</p></td>' +
+            '<td class="text-sm text-muted">' + escapeHtml((d.license_number || '').toUpperCase()) + '</td>' +
+            '<td class="text-sm text-muted">' + escapeHtml((d.ambulance_registration || '').toUpperCase()) + ' (' + escapeHtml(d.ambulance_type) + ')</td>' +
+            '<td><span class="status-dot ' + (d.availability_status === 'available' ? 'dot-online' : (d.availability_status === 'on_route' ? 'dot-busy' : 'dot-offline')) + '"></span></td>' +
+            '<td>' + actionCell + '</td>' +
+            '</tr>';
+        });
+
+        let revokedRows = '';
+        revoked.forEach(d => {
+          const driverId = Number(d.driver_id) || 0;
+          const note = d.verification_note || '';
+          const reason = note.replace(/^temporarily disabled:\s*/i, '').replace(/^rejected:\s*/i, '');
+          revokedRows += '<tr>' +
+            '<td><p class="text-sm font-medium">' + escapeHtml(d.full_name) + '</p><p class="text-xs text-muted">' + escapeHtml(d.email) + '</p></td>' +
+            '<td class="text-sm text-muted">' + escapeHtml((d.license_number || '').toUpperCase()) + '</td>' +
+            '<td class="text-sm text-muted">' + escapeHtml((d.ambulance_registration || '').toUpperCase()) + ' (' + escapeHtml(d.ambulance_type) + ')</td>' +
+            '<td class="text-sm text-muted">' + escapeHtml(reason || '-') + '</td>' +
+            '<td><button class="text-xs" style="background:none;border:none;cursor:pointer;text-decoration:underline;color:var(--success);" onclick="reactivateDriver(this, ' + driverId + ')">Reactivate</button></td>' +
+            '</tr>';
+        });
+
+        let rejectedRows = '';
+        rejectedList.forEach(d => {
+          const driverId = Number(d.driver_id) || 0;
+          const note = d.verification_note || '';
+          const reason = note.replace(/^rejected:\s*/i, '');
+          rejectedRows += '<tr>' +
+            '<td><p class="text-sm font-medium">' + escapeHtml(d.full_name) + '</p><p class="text-xs text-muted">' + escapeHtml(d.email) + '</p></td>' +
+            '<td class="text-sm text-muted">' + escapeHtml((d.license_number || '').toUpperCase()) + '</td>' +
+            '<td class="text-sm text-muted">' + escapeHtml((d.ambulance_registration || '').toUpperCase()) + ' (' + escapeHtml(d.ambulance_type) + ')</td>' +
+            '<td class="text-sm text-muted">' + escapeHtml(reason || '-') + '</td>' +
+            '<td><button class="text-xs" style="background:none;border:none;cursor:pointer;text-decoration:underline;color:var(--warning);" onclick="recheckDriver(this, ' + driverId + ')">Re-check</button></td>' +
+            '</tr>';
+        });
+
+        document.getElementById('app').innerHTML =
+          renderSidebar('admin', 'verify-drivers.html') +
+          '<div class="main-area">' + renderTopbar([]) +
+          '<div class="content"><div class="space-y-6">' +
+            '<div><h1 class="page-title">Drivers</h1><p class="page-subtitle">Verify and manage ambulance drivers</p></div>' +
+            '<div id="adminError" class="alert-error" style="display:none;"></div>' +
+            pendingSection +
+            '<div><h3 class="section-title section-title-flex mb-3"> <span class="stat-icon stat-icon-green-icons"><span class="material-symbols-outlined">check_circle</span></span> Verified Drivers (' + approved.length + ')</h3>' +
+              '<div class="card"><div style="overflow-x:auto;"><table><thead><tr><th>Driver</th><th>License</th><th>Ambulance</th><th>Status</th><th>Action</th></tr></thead>' +
+              '<tbody>' + verifiedRows + '</tbody></table></div></div></div>' +
+            (revoked.length > 0
+              ? '<div><h3 class="section-title section-title-flex mb-3"><span class="stat-icon stat-icon-red-icons"><span class="material-symbols-outlined">block</span></span> Temporarily Disabled Accounts (' + revoked.length + ')</h3>' +
+                '<div class="card"><div style="overflow-x:auto;"><table><thead><tr><th>Driver</th><th>License</th><th>Ambulance</th><th>Reason</th><th>Action</th></tr></thead>' +
+                '<tbody>' + revokedRows + '</tbody></table></div></div></div>'
+              : '') +
+            (rejectedList.length > 0
+              ? '<div><h3 class="section-title section-title-flex mb-3"><span class="stat-icon stat-icon-red-icons"><span class="material-symbols-outlined">warning</span></span> Rejected Applications (' + rejectedList.length + ')</h3>' +
+                '<div class="card"><div style="overflow-x:auto;"><table><thead><tr><th>Driver</th><th>License</th><th>Ambulance</th><th>Reason</th><th>Action</th></tr></thead>' +
+                '<tbody>' + rejectedRows + '</tbody></table></div></div></div>'
+              : '') +
+          '</div></div></div>';
+      }
+
+      async function update(driverId, decision, reason = '', context = '') {
+        const err = document.getElementById('adminError');
+        if (err) err.style.display = 'none';
+        const payload = { driver_id: driverId, decision };
+        if (reason) payload.reason = reason;
+        if (context) payload.context = context;
+        const res = await apiFetch(window.APP_ROOT + 'api/admin/verify_driver.php', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(payload),
+        });
+        if (!res.success && err) { err.textContent = res.message || 'Update failed'; err.style.display = 'block'; }
+        await render();
+      }
+
+      window.verifyDriver = async (btn, id) => {
+        const origHtml = btn.innerHTML;
+        btn.innerHTML = '<span class="btn-spinner" style="display:inline-block;border-color:currentColor;border-bottom-color:transparent;"></span> Approving...';
+        btn.disabled = true;
+        const res = await apiFetch(window.APP_ROOT + 'api/admin/verify_driver.php', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ driver_id: id, decision: 'approved' }),
+        });
+        btn.disabled = false;
+        btn.innerHTML = origHtml;
+        if (!res || !res.success) {
+          const err = document.getElementById('adminError');
+          if (err) { err.textContent = (res && res.message) || 'Update failed'; err.style.display = 'block'; }
+          return;
+        }
+        showToast('Driver Approved', 'Driver application approved successfully', 'success');
+        await render();
+      };
+
+      function openReasonDialog(driverId, mode) {
+        const existing = document.getElementById('adminReasonDialog');
+        if (existing) existing.remove();
+
+        const backdrop = document.createElement('div');
+        backdrop.id = 'adminReasonDialog';
+        backdrop.style.position = 'fixed';
+        backdrop.style.inset = '0';
+        backdrop.style.background = 'rgba(15,23,42,0.35)';
+        backdrop.style.display = 'flex';
+        backdrop.style.alignItems = 'center';
+        backdrop.style.justifyContent = 'center';
+        backdrop.style.zIndex = '9998';
+
+        const card = document.createElement('div');
+        card.className = 'card card-padded';
+        card.style.maxWidth = '420px';
+        card.style.width = '100%';
+
+        const title = mode === 'temporarily_disabled' ? 'Temporarily Disable Driver' : 'Reject Driver';
+        const helpText = mode === 'temporarily_disabled'
+          ? 'Optionally provide a reason for temporarily disabling this driver. This will be visible to the driver.'
+          : 'Optionally provide a reason for rejecting this driver. This will be visible to the driver.';
+
+        card.innerHTML =
+          '<h3 class="font-bold mb-2">' + title + '</h3>' +
+          '<p class="text-sm text-muted mb-3">' + helpText + '</p>' +
+          '<div class="form-group" style="margin-top:0;">' +
+            '<label class="text-sm font-medium">Reason (optional)</label>' +
+            '<textarea id="adminReasonInput" class="form-textarea" rows="3" placeholder="Enter reason..."></textarea>' +
+          '</div>' +
+          '<div class="flex-row gap-3 mt-3">' +
+            '<button id="adminReasonConfirm" class="btn btn-emergency btn-sm" style="flex:1;">Confirm</button>' +
+            '<button id="adminReasonCancel" class="btn btn-sm" style="flex:1;">Cancel</button>' +
+          '</div>';
+
+        backdrop.appendChild(card);
+        document.body.appendChild(backdrop);
+
+        document.getElementById('adminReasonCancel').onclick = () => {
+          backdrop.remove();
+        };
+        document.getElementById('adminReasonConfirm').onclick = async function() {
+          this.innerHTML = '<span class="btn-spinner" style="display:inline-block;border-color:currentColor;border-bottom-color:transparent;"></span> Processing...';
+          this.disabled = true;
+          await new Promise(r => setTimeout(r, 1500));
+          
+          const reason = (document.getElementById('adminReasonInput').value || '').trim();
+          const err = document.getElementById('adminError');
+          if (err) err.style.display = 'none';
+          const res = await apiFetch(window.APP_ROOT + 'api/admin/verify_driver.php', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ driver_id: driverId, decision: 'rejected', reason, context: mode }),
+          });
+          if (!res.success && err) {
+            err.textContent = res.message || 'Update failed';
+            err.style.display = 'block';
+          } else if (res.success) {
+            if (mode === 'temporarily_disabled') {
+              showToast('Account Disabled', 'Account temporarily disabled successfully', 'error');
+            } else {
+              showToast('Driver Rejected', 'Driver application rejected', 'warning');
+            }
+          }
+          backdrop.remove();
+          await render();
+        };
+      }
+
+      window.rejectDriver = async (id) => {
+        openReasonDialog(id, 'rejected');
+      };
+
+      window.revokeDriver = async (id) => {
+        openReasonDialog(id, 'temporarily_disabled');
+      };
+
+      window.reactivateDriver = async (btn, id) => {
+        btn.innerHTML = 'Reactivating...';
+        btn.disabled = true;
+        await new Promise(r => setTimeout(r, 1500));
+        await update(id, 'approved', '', 'reactivated');
+        showToast('Driver Reactivated', 'Driver reactivated successfully', 'success');
+      };
+
+      window.recheckDriver = async (btn, id) => {
+        btn.innerHTML = 'Re-checking...';
+        btn.disabled = true;
+        await new Promise(r => setTimeout(r, 1500));
+        await update(id, 'pending');
+        showToast('Application Re-checked', 'Application moved back to pending list', 'info');
+      };
+
+      // Secure In-Page Document Viewer
+      window.viewDocument = function(url, title) {
+        const existing = document.getElementById('docViewerModal');
+        if (existing) existing.remove();
+
+        const isPdf = /\.pdf(\?|$)/i.test(url);
+        const backdrop = document.createElement('div');
+        backdrop.id = 'docViewerModal';
+        backdrop.style.cssText = 'position:fixed;inset:0;background:rgba(10,15,30,0.82);display:flex;flex-direction:column;z-index:10000;backdrop-filter:blur(2px);';
+
+        // Toolbar
+        const toolbar = document.createElement('div');
+        toolbar.style.cssText = 'display:flex;align-items:center;justify-content:space-between;padding:12px 18px;background:var(--card,#1e293b);border-bottom:1px solid rgba(255,255,255,0.08);flex-shrink:0;gap:12px;';
+        toolbar.innerHTML =
+          '<span style="font-weight:600;font-size:15px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">' + escapeHtml(title || 'Document Preview') + '</span>' +
+          '<div style="display:flex;gap:10px;flex-shrink:0;">' +
+            '<a href="' + escapeAttr(url) + '" target="_blank" rel="noopener" style="padding:6px 14px;border-radius:6px;background:rgba(255,255,255,0.1);color:inherit;text-decoration:none;font-size:13px;display:flex;align-items:center;gap:5px;"><span class="material-symbols-outlined" style="font-size:16px;vertical-align:middle;">open_in_new</span> Open in Tab</a>' +
+            '<button onclick="document.getElementById(\'docViewerModal\').remove();" style="padding:6px 14px;border-radius:6px;background:rgba(255,255,255,0.08);border:none;color:inherit;cursor:pointer;font-size:13px;display:flex;align-items:center;gap:5px;"><span class="material-symbols-outlined" style="font-size:16px;vertical-align:middle;">close</span> Close</button>' +
+          '</div>';
+
+        // Content
+        const content = document.createElement('div');
+        content.style.cssText = 'flex:1;overflow:auto;display:flex;align-items:center;justify-content:center;padding:16px;min-height:0;';
+
+        if (isPdf) {
+          const iframe = document.createElement('iframe');
+          iframe.src = url;
+          iframe.style.cssText = 'width:100%;height:100%;border:none;border-radius:6px;background:#fff;min-height:calc(100vh - 56px);';
+          content.appendChild(iframe);
+        } else {
+          const img = document.createElement('img');
+          img.src = url;
+          img.alt = title || 'Document';
+          img.style.cssText = 'max-width:100%;max-height:calc(100vh - 100px);object-fit:contain;border-radius:8px;box-shadow:0 8px 32px rgba(0,0,0,0.5);';
+          content.appendChild(img);
+        }
+
+        backdrop.appendChild(toolbar);
+        backdrop.appendChild(content);
+
+        // Close on backdrop click
+        backdrop.addEventListener('click', function(e) {
+          if (e.target === backdrop) backdrop.remove();
+        });
+
+        document.body.appendChild(backdrop);
+      };
+
+      await render();
+    })();
+  </script>
+</body>
+</html>

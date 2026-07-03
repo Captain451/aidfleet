@@ -1,0 +1,202 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>AidFleet - Emergency Response</title>
+  <script>
+    (function () {
+      try {
+        if (sessionStorage.getItem('aidfleet_disclaimer_accepted') !== '1') {
+          window.location.replace('disclaimer.html');
+        }
+      } catch (e) {
+        window.location.replace('disclaimer.html');
+      }
+    })();
+  </script>
+  <link rel="stylesheet" href="css/style.css">
+  
+<link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:opsz,wght,FILL,GRAD@20..48,100..700,0..1,-50..200" rel="stylesheet" />
+</head>
+<body>
+  <!-- Navigation -->
+  <nav class="landing-nav">
+    <div class="landing-nav-inner">
+      <a href="index.html" class="nav-logo">
+        <img src="images/aidfleet-logo.png" alt="AidFleet" class="nav-logo-img">
+        <span>AidFleet</span>
+      </a>
+      <div class="nav-actions">
+        <a href="auth/login.html"><button class="btn-ghost" type="button">Log in</button></a>
+        <a href="auth/register.html"><button class="btn-landing-primary" type="button">Get Started</button></a>
+      </div>
+    </div>
+  </nav>
+
+  <!-- Hero -->
+  <section class="landing-hero">
+    <div class="landing-hero-inner">
+
+      <h1>
+        Every Second Counts.
+        <span class="highlight">We Make Them Count More.</span>
+      </h1>
+      <p class="hero-sub">
+        AidFleet connects emergency requesters with the nearest verified ambulance drivers in real-time. Fast dispatch. Live tracking. Lives saved.
+      </p>
+      <div class="hero-actions">
+        <a href="auth/login.html"><button class="btn-hero-lg btn-hero-emergency" type="button"> Request an Ambulance <span class="material-symbols-outlined" style="width:18px;height:18px;display:inline;vertical-align:middle;margin-right:4px;">arrow_forward_ios</span></button></a>
+        <a href="auth/login.html?role=driver"><button class="btn-hero-lg btn-hero-outline" type="button">Driver Login</button></a>
+      </div>
+    </div>
+  </section>
+
+  <!-- Stats -->
+  <section class="landing-stats-bar">
+    <div class="landing-stats-inner">
+      <div class="landing-stat"><div class="landing-stat-val" id="stat-response">—</div><div class="landing-stat-label">Avg Response Time</div></div>
+      <div class="landing-stat"><div class="landing-stat-val" id="stat-trips">—</div><div class="landing-stat-label">Trips Completed</div></div>
+      <div class="landing-stat"><div class="landing-stat-val" id="stat-drivers">—</div><div class="landing-stat-label">Verified Drivers</div></div>
+      <div class="landing-stat"><div class="landing-stat-val" id="stat-uptime">99.9%</div><div class="landing-stat-label">Uptime</div></div>
+    </div>
+  </section>
+
+  <!-- Features -->
+  <section class="landing-section">
+    <h2>Built for Emergencies</h2>
+    <p class="section-sub">Everything you need for fast, reliable emergency medical transport.</p>
+    <div class="features-grid">
+      <div class="feature-card">
+        <div class="feature-card-icon"><span class="material-symbols-outlined">bolt</span></div>
+        <div class="feature-card-text">
+          <h3>Instant Dispatch</h3>
+          <p>Request an ambulance in seconds with GPS-powered location detection and priority triage.</p>
+        </div>
+      </div>
+      <div class="feature-card">
+        <div class="feature-card-icon"><span class="material-symbols-outlined">location_on</span></div>
+        <div class="feature-card-text">
+          <h3>Live Tracking</h3>
+          <p>Track your ambulance in real-time from dispatch to arrival with ETA updates.</p>
+        </div>
+      </div>
+      <div class="feature-card">
+        <div class="feature-card-icon"><span class="material-symbols-outlined">verified_user</span></div>
+        <div class="feature-card-text">
+          <h3>Verified Drivers</h3>
+          <p>Every driver is background-checked and verified before joining the AidFleet network.</p>
+        </div>
+      </div>
+      <div class="feature-card">
+        <div class="feature-card-icon"><span class="material-symbols-outlined">timer</span></div>
+        <div class="feature-card-text">
+          <h3>Fast Response</h3>
+          <p>The system provides a list of available drivers based on distance by proritizing closest available ambulance to minimize wait times.</p>
+        </div>
+      </div>
+      <div class="feature-card">
+        <div class="feature-card-icon"><span class="material-symbols-outlined">group</span></div>
+        <div class="feature-card-text">
+          <h3>Role-Based Access</h3>
+          <p>Secure portals for requesters, drivers, and administrators with tailored features.</p>
+        </div>
+      </div>
+      <div class="feature-card">
+        <div class="feature-card-icon"><span class="material-symbols-outlined">call</span></div>
+        <div class="feature-card-text">
+          <h3>24/7 Availability</h3>
+          <p>Round-the-clock emergency dispatch coverage across the service area.</p>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  
+  <section class="how-section">
+    <div class="how-section-inner">
+      <h2>How It Works</h2>
+      <div class="how-grid">
+        <div class="how-step">
+          <div class="how-step-num">1</div>
+          <h3>Request Help</h3>
+          <p>Submit an emergency request with your location and situation details.</p>
+        </div>
+        <div class="how-step">
+          <div class="how-step-num">2</div>
+          <h3>Driver Dispatched</h3>
+          <p>Select the nearest verified available ambulance and dispatch is done instantly.</p>
+        </div>
+        <div class="how-step">
+          <div class="how-step-num">3</div>
+          <h3>Track & Arrive</h3>
+          <p>Track your ambulance live until help arrives at your location.</p>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  
+  <section class="cta-section">
+    <h2>Ready to Save Lives?</h2>
+    <p>Join AidFleet today; whether you need help or want to provide it.</p>
+    <div class="cta-actions">
+      <a href="auth/register.html"><button class="btn-hero-lg btn-hero-emergency" type="button">Create Account <span class="material-symbols-outlined" style="width:18px;height:18px;display:inline;vertical-align:middle;margin-right:4px;">chevron_forward</span></button></a>
+      <a href="auth/login.html"><button class="btn-hero-lg btn-hero-outline" type="button">Sign In</button></a>
+    </div>
+  </section>
+
+  <!-- Footer -->
+  <footer class="landing-footer">
+    <div class="landing-footer-inner">
+      <div class="footer-brand">
+        <img src="images/aidfleet-logo.png" alt="AidFleet" class="footer-logo-img">
+        <span>AidFleet</span>
+        <span>© 2026</span>
+      </div>
+      <p>Smart Emergency Response System</p>
+    </div>
+  </footer>
+</body>
+</html>
+
+<script>
+(function() {
+  function animateCount(el, target, suffix, duration) {
+    if (target === 0) { el.textContent = '0' + suffix; return; }
+    var start = 0;
+    var startTime = null;
+    function step(timestamp) {
+      if (!startTime) startTime = timestamp;
+      var progress = Math.min((timestamp - startTime) / duration, 1);
+      // Ease-out cubic
+      var eased = 1 - Math.pow(1 - progress, 3);
+      var current = Math.floor(eased * target);
+      el.textContent = current + suffix;
+      if (progress < 1) requestAnimationFrame(step);
+      else el.textContent = target + suffix;
+    }
+    requestAnimationFrame(step);
+  }
+
+  fetch('api/stats.php')
+    .then(function(r) { return r.json(); })
+    .then(function(data) {
+      if (!data.success) return;
+      var s = data.stats;
+      var responseEl = document.getElementById('stat-response');
+      var tripsEl = document.getElementById('stat-trips');
+      var driversEl = document.getElementById('stat-drivers');
+
+      var avgMin = s.avg_response_min || 0;
+      if (avgMin > 0) {
+        animateCount(responseEl, avgMin, 'min', 1200);
+      } else {
+        responseEl.textContent = '—';
+      }
+      animateCount(tripsEl, s.trips_completed, '+', 1500);
+      animateCount(driversEl, s.verified_drivers, '+', 1200);
+    })
+    .catch(function() {});
+})();
+</script>

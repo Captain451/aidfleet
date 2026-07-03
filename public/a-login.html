@@ -1,0 +1,135 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>AidFleet - Admin Portal</title>
+  <link rel="stylesheet" href="css/style.css">
+  
+<link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:opsz,wght,FILL,GRAD@20..48,100..700,0..1,-50..200" rel="stylesheet" />
+</head>
+
+<body>
+  <div class="auth-bg">
+    <div class="auth-bg-image" style="background-image:url('images/hero-bg.jpg');"></div>
+    <div class="auth-bg-overlay" style="background: rgba(15, 23, 42, 0.85);"></div>
+
+    <!-- Glass card -->
+    <div class="glass-card" style="border-top: 3px solid var(--primary);">
+      <div class="glass-logo">
+        <img src="images/aidfleet-logo.png" alt="AidFleet" class="glass-logo-img">
+        <h1>AidFleet Admin</h1>
+      </div>
+      <h2>System Portal</h2>
+      <p class="subtitle">Administrator dashboard access</p>
+
+        <form id="loginForm" class="space-y-4" style="margin-top:16px;">
+        <div class="form-group" style="margin-top:0;">
+          <label>Admin Email</label>
+          <input type="email" id="email" class="glass-input" placeholder="admin@aidfleet.com">
+        </div>
+        <div class="form-group">
+          <label>Password</label>
+          <div class="password-wrapper">
+            <input type="password" id="password" class="glass-input" placeholder="Enter your password">
+            <button type="button" class="password-toggle" onclick="togglePassword(this, 'password')"><span class="material-symbols-outlined">visibility</span></button>
+          </div>
+        </div>
+        <div id="errorMsg" class="alert-inline-error" style="display:none; margin-bottom: 8px;"></div>
+        <div class="form-group">
+          <button type="submit" class="btn-glass-primary">Access Portal</button>
+        </div>
+      </form>
+      <p class="auth-link" style="margin-top:24px;font-size:13px;color:rgba(255,255,255,0.45);">Administrator password resets are handled by system security policy. Contact your super administrator if locked out.</p>
+    </div>
+  </div>
+  <script src="js/data.js"></script>
+  <script>
+// Redirect if already logged in
+    (async () => {
+      const existing = await getCurrentUser();
+      if (existing) {
+        if (existing.role === 'admin') window.location.href = 'admin/dashboard.html';
+        else if (existing.role === 'driver') window.location.href = 'driver/dashboard.html';
+        else window.location.href = 'requester/dashboard.html';
+      }
+    })();
+
+    function togglePassword(btn, inputId) {
+      const p = document.getElementById(inputId);
+      const eyeIcon = '<span class="material-symbols-outlined" style="font-size:20px;vertical-align:middle;">visibility</span>';
+      const eyeOffIcon = '<span class="material-symbols-outlined" style="font-size:20px;vertical-align:middle;">visibility_off</span>';
+
+      if (p.type === 'password') {
+        p.type = 'text';
+        btn.innerHTML = eyeOffIcon;
+      } else {
+        p.type = 'password';
+        btn.innerHTML = eyeIcon;
+      }
+    }
+
+    document.getElementById('loginForm').addEventListener('submit', function (e) {
+      e.preventDefault();
+      const email = document.getElementById('email').value.trim();
+      const password = document.getElementById('password').value.trim();
+      const errEl = document.getElementById('errorMsg');
+      if (!email || !password) {
+        showInlineError('errorMsg', 'Please fill in all fields');
+        return;
+      }
+      (async () => {
+        errEl.style.display = 'none';
+        const submitBtn = document.querySelector('#loginForm button[type="submit"]');
+        const originalBtnText = submitBtn.innerHTML;
+        const originalBtnBg = submitBtn.style.background;
+
+        submitBtn.innerHTML = '<span class="btn-spinner" style="display:inline-block;border-color:currentColor;border-bottom-color:transparent;"></span> Authenticating...';
+        submitBtn.disabled = true;
+
+        const result = await loginAdmin(email, password);
+
+        if (result.success && result.user && result.user.role === 'admin') {
+          submitBtn.innerHTML = '<span class="material-symbols-outlined inline-icon">check_circle</span> Access granted...';
+          submitBtn.style.background = 'var(--success)';
+          submitBtn.style.borderColor = 'var(--success)';
+
+          await new Promise(r => setTimeout(r, 2700));
+          window.location.href = 'admin/dashboard.html';
+        } else if (result.locked_until) {
+          showInlineError('errorMsg', result.message);
+          
+          let lockedUntilMs = result.locked_until * 1000;
+          if (window._adminLockInterval) clearInterval(window._adminLockInterval);
+          
+          function updateLockBtn() {
+            let now = new Date().getTime();
+            let diff = lockedUntilMs - now;
+            if (diff <= 0) {
+              clearInterval(window._adminLockInterval);
+              submitBtn.innerHTML = originalBtnText;
+              submitBtn.style.background = originalBtnBg || '';
+              submitBtn.disabled = false;
+              errEl.style.display = 'none';
+            } else {
+              let m = Math.floor((diff % (1000 * 60 * 60)) / (1000 * 60));
+              let s = Math.floor((diff % (1000 * 60)) / 1000);
+              submitBtn.innerHTML = '<span class="btn-spinner" style="display:inline-block;border-color:currentColor;border-bottom-color:transparent;"></span> Refreshing... ' + m + 'm ' + s + 's';
+            }
+          }
+          
+          updateLockBtn();
+          window._adminLockInterval = setInterval(updateLockBtn, 1000);
+        } else {
+          submitBtn.innerHTML = originalBtnText;
+          submitBtn.style.background = originalBtnBg || '';
+          submitBtn.disabled = false;
+          showInlineError('errorMsg', result.message || 'Invalid admin credentials');
+        }
+      })();
+    });
+  </script>
+</body>
+
+</html>

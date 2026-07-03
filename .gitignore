@@ -1,0 +1,30 @@
+# Environment and secrets
+.env
+.env.local
+.env.production
+
+# Dependencies
+/vendor/
+
+# IDE
+.vs/
+.vscode/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Uploads (user-generated)
+/public/uploads/
+
+# One-time setup utilities (delete from server after use)
+/public/seed.html
+/public/api/admin/seed_demo.php
+
+# Developer CLI scripts (not for production)
+/scripts/
+
+# Local logs and debug listings
+/storage/logs/
+/tree.txt
+

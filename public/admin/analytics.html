@@ -1,0 +1,632 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>AidFleet - System Analytics</title>
+  <meta name="description"
+    content="AidFleet admin analytics dashboard — visual insights into emergency dispatch performance, driver verification, user growth, and system health.">
+  <link rel="stylesheet" href="../css/style.css">
+
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+  <style>
+    /* Analytics-specific styles */
+    .analytics-kpi-grid {
+      display: grid;
+      gap: 16px;
+      grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+    }
+
+    .analytics-kpi-card {
+      background: var(--card);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 18px 20px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      transition: box-shadow 0.2s, border-color 0.2s;
+    }
+
+    .analytics-kpi-card:hover {
+      box-shadow: 0 4px 20px rgba(0, 0, 0, 0.06);
+      border-color: hsl(220, 15%, 80%);
+    }
+
+    .analytics-kpi-label {
+      font-size: 12px;
+      color: var(--muted-foreground);
+      text-transform: uppercase;
+      letter-spacing: 0.04em;
+      margin-bottom: 6px;
+    }
+
+    .analytics-kpi-value {
+      font-size: 26px;
+      font-weight: 700;
+      color: var(--foreground);
+    }
+
+    .analytics-kpi-icon {
+      width: 44px;
+      height: 44px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      border-radius: 10px;
+      flex-shrink: 0;
+    }
+
+    .analytics-kpi-icon svg {
+      width: 22px;
+      height: 22px;
+    }
+
+    .analytics-kpi-icon.kpi-blue {
+      background: hsl(217, 91%, 60%, 0.12);
+      color: hsl(217, 91%, 60%);
+    }
+
+    .analytics-kpi-icon.kpi-success {
+      background: hsl(145, 65%, 38%, 0.12);
+      color: var(--success);
+    }
+
+    .analytics-kpi-icon.kpi-warning {
+      background: hsl(38, 92%, 50%, 0.12);
+      color: var(--warning);
+    }
+
+    .analytics-kpi-icon.kpi-emergency {
+      background: hsl(0, 85%, 55%, 0.12);
+      color: var(--emergency);
+    }
+
+    .analytics-kpi-icon.kpi-info {
+      background: hsl(210, 90%, 55%, 0.12);
+      color: var(--info);
+    }
+
+    .analytics-chart-grid {
+      display: grid;
+      gap: 20px;
+      grid-template-columns: repeat(auto-fit, minmax(400px, 1fr));
+    }
+
+    .analytics-chart-card {
+      background: var(--card);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 20px;
+      display: flex;
+      flex-direction: column;
+    }
+
+    .analytics-chart-card h3 {
+      font-size: 15px;
+      font-weight: 600;
+      color: var(--foreground);
+      margin-bottom: 4px;
+    }
+
+    .analytics-chart-sub {
+      font-size: 13px;
+      color: var(--muted-foreground);
+      margin-bottom: 16px;
+    }
+
+    .analytics-chart-wrap {
+      position: relative;
+      flex: 1;
+      min-height: 260px;
+    }
+
+    /* Gauge */
+    .analytics-gauge-wrap {
+      position: relative;
+      min-height: 260px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    }
+
+    .analytics-gauge-needle {
+      position: absolute;
+      inset: 0;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      pointer-events: none;
+      transform: rotate(-120deg);
+      transition: transform 900ms cubic-bezier(0.22, 1, 0.36, 1);
+    }
+
+    .analytics-gauge-hub {
+      position: absolute;
+      inset: 0;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      pointer-events: none;
+    }
+
+    .analytics-gauge-hub-dot {
+      width: 16px;
+      height: 16px;
+      border-radius: 50%;
+      border: 2px solid white;
+    }
+
+    .analytics-gauge-label {
+      position: absolute;
+      inset: 0;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      padding-top: 80px;
+    }
+
+    .analytics-gauge-value {
+      font-size: 36px;
+      font-weight: 700;
+      color: var(--foreground);
+    }
+
+    .analytics-gauge-unit {
+      font-size: 11px;
+      color: var(--muted-foreground);
+      text-transform: uppercase;
+      letter-spacing: 0.1em;
+    }
+
+    /* Summary bar */
+    .analytics-summary-bar {
+      display: grid;
+      gap: 16px;
+      grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+    }
+
+    .analytics-summary-item {
+      background: var(--card);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 16px 20px;
+      display: flex;
+      align-items: center;
+      gap: 12px;
+    }
+
+    .analytics-summary-icon {
+      width: 36px;
+      height: 36px;
+      border-radius: 8px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      flex-shrink: 0;
+    }
+
+    .analytics-summary-icon svg {
+      width: 18px;
+      height: 18px;
+    }
+
+    .analytics-summary-label {
+      font-size: 12px;
+      color: var(--muted-foreground);
+    }
+
+    .analytics-summary-value {
+      font-size: 18px;
+      font-weight: 700;
+      color: var(--foreground);
+    }
+
+    /* Loading skeleton */
+    .analytics-loading {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      min-height: 400px;
+      gap: 16px;
+      color: var(--muted-foreground);
+    }
+
+    .analytics-loading-spinner {
+      width: 40px;
+      height: 40px;
+      border: 3px solid var(--border);
+      border-top-color: var(--emergency);
+      border-radius: 50%;
+      animation: btnSpin 0.7s linear infinite;
+    }
+
+    @media (max-width: 768px) {
+      .analytics-chart-grid {
+        grid-template-columns: 1fr;
+      }
+
+      .analytics-kpi-grid {
+        grid-template-columns: 1fr 1fr;
+      }
+
+      .analytics-summary-bar {
+        grid-template-columns: 1fr;
+      }
+    }
+
+    @media (max-width: 480px) {
+      .analytics-kpi-grid {
+        grid-template-columns: 1fr;
+      }
+    }
+  </style>
+  <link
+    href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:opsz,wght,FILL,GRAD@20..48,100..700,0..1,-50..200"
+    rel="stylesheet" />
+</head>
+
+<body>
+  <div class="app-layout" id="app">
+    <div class="analytics-loading" id="analyticsLoading">
+      <div class="analytics-loading-spinner"></div>
+      <p>Loading analytics…</p>
+    </div>
+  </div>
+  <script>
+    window.APP_ROOT = "../";
+  </script>
+  <script src="../js/data.js"></script>
+  <script>
+    (async () => {
+      const user = await requireAuth(['admin']);
+      if (!user) return;
+
+      const res = await apiFetch(window.APP_ROOT + 'api/admin/analytics.php');
+      const data = res.success ? res.analytics : null;
+
+      if (!data) {
+        document.getElementById('app').innerHTML =
+          renderSidebar('admin', 'analytics.html') +
+          '<div class="main-area">' + renderTopbar([]) +
+          '<div class="content"><div class="space-y-6">' +
+          '<div><h1 class="page-title">Analytics Dashboard</h1><p class="page-subtitle">Visual overview of system performance</p></div>' +
+          '<div class="alert-warning">Failed to load analytics data. Please try again later.</div>' +
+          '</div></div></div>';
+        return;
+      }
+
+      const users = data.users;
+      const drivers = data.drivers;
+      const requests = data.requests;
+      const perf = data.performance;
+      const system = data.system;
+
+      const avgMin = typeof perf.avg_response_minutes === 'number' ? perf.avg_response_minutes : 0;
+      const avgSeconds = perf.avg_response_seconds != null ? Number(perf.avg_response_seconds) : null;
+      const hasAvgData = (perf.response_sample_count || 0) > 0 && avgSeconds != null;
+      const gaugeMax = 15;
+      const gaugeMinutes = hasAvgData ? Math.min(avgMin > 0 ? avgMin : avgSeconds / 60, gaugeMax) : 0;
+      const gaugeDisplay = hasAvgData ? perf.avg_response_time : '—';
+      const gaugeUnit = hasAvgData ? (avgSeconds < 60 ? 'seconds' : 'minutes') : 'no data';
+
+      const kpis = [
+        { label: 'Total Requesters', value: users.total, icon: 'person_add', color: 'kpi-blue' },
+        { label: 'Total Drivers', value: drivers.total, icon: 'local_shipping', color: 'kpi-blue' },
+        { label: 'Verified Responders', value: drivers.verified, icon: 'check_circle', color: 'kpi-success' },
+        { label: 'Emergency Requests', value: requests.total, icon: 'warning', color: 'kpi-emergency' },
+        { label: 'Avg Response Time', value: perf.avg_response_time, icon: 'timer', color: 'kpi-warning' },
+      ];
+
+      let kpiHtml = '';
+      kpis.forEach(kpi => {
+        kpiHtml +=
+          '<div class="analytics-kpi-card">' +
+          '<div>' +
+          '<p class="analytics-kpi-label">' + kpi.label + '</p>' +
+          '<p class="analytics-kpi-value">' + escapeHtml(kpi.value) + '</p>' +
+          '</div>' +
+          '<div class="analytics-kpi-icon ' + kpi.color + '">' +
+          '<span class="material-symbols-outlined">' + kpi.icon + '</span>' +
+          '</div>' +
+          '</div>';
+      });
+
+      let summaryHtml =
+        '<div class="analytics-summary-bar">' +
+        '<div class="analytics-summary-item">' +
+        '<div class="analytics-summary-icon" style="background:hsl(145,65%,38%,0.12);color:var(--success);"><span class="material-symbols-outlined">check_circle</span></div>' +
+        '<div><p class="analytics-summary-label">Completed Trips</p><p class="analytics-summary-value">' + escapeHtml(perf.completed_trips) + '</p></div>' +
+        '</div>' +
+        '<div class="analytics-summary-item">' +
+        '<div class="analytics-summary-icon" style="background:hsl(210,90%,55%,0.12);color:var(--info);"><span class="material-symbols-outlined">radio</span></div>' +
+        '<div><p class="analytics-summary-label">Drivers Online</p><p class="analytics-summary-value">' + escapeHtml(drivers.online) + '</p></div>' +
+        '</div>' +
+        '<div class="analytics-summary-item">' +
+        '<div class="analytics-summary-icon" style="background:hsl(38,92%,50%,0.12);color:var(--warning);"><span class="material-symbols-outlined">gpp_maybe</span></div>' +
+        '<div><p class="analytics-summary-label">Pending Verification</p><p class="analytics-summary-value">' + escapeHtml(drivers.pending) + '</p></div>' +
+        '</div>' +
+        '<div class="analytics-summary-item">' +
+        '<div class="analytics-summary-icon" style="background:hsl(220,15%,94%);color:var(--muted-foreground);"><span class="material-symbols-outlined">receipt_long</span></div>' +
+        '<div><p class="analytics-summary-label">System Log Entries</p><p class="analytics-summary-value">' + escapeHtml(system.total_logs) + '</p></div>' +
+        '</div>' +
+        '</div>';
+
+      const typeLabels = Object.keys(requests.by_type);
+      const typeValues = Object.values(requests.by_type);
+
+      const statusMap = {
+        pending: 'Pending',
+        driver_selected: 'Driver Selected',
+        accepted: 'Accepted',
+        rejected: 'Rejected',
+        completed: 'Completed',
+        cancelled: 'Cancelled'
+      };
+      const statusLabels = [];
+      const statusValues = [];
+      for (const [key, cnt] of Object.entries(requests.by_status)) {
+        statusLabels.push(statusMap[key] || key);
+        statusValues.push(cnt);
+      }
+
+      const gaugeUsed = hasAvgData ? Math.min(gaugeMinutes, gaugeMax) : 0;
+      const gaugeRemain = gaugeMax - gaugeUsed;
+      const gaugeColor = gaugeMinutes <= 5 ? 'hsl(145,65%,45%)' : gaugeMinutes <= 10 ? 'hsl(38,92%,50%)' : 'hsl(0,84%,60%)';
+
+      document.getElementById('app').innerHTML =
+        renderSidebar('admin', 'analytics.html') +
+        '<div class="main-area">' + renderTopbar([]) +
+        '<div class="content"><div class="space-y-6">' +
+
+        // Header
+        '<div><h1 class="page-title">Analytics Dashboard</h1>' +
+        '<p class="page-subtitle">Visual insights into system performance and growth</p></div>' +
+
+        // KPI grid
+        '<div class="analytics-kpi-grid">' + kpiHtml + '</div>' +
+
+        // Summary bar
+        summaryHtml +
+
+        // Charts grid
+        '<div class="analytics-chart-grid">' +
+
+        // 1. Driver Verification - Doughnut
+        '<div class="analytics-chart-card">' +
+        '<h3>Driver Verification Status</h3>' +
+        '<p class="analytics-chart-sub">Verified vs Pending vs Rejected</p>' +
+        '<div class="analytics-chart-wrap"><canvas id="chartVerification"></canvas></div>' +
+        '</div>' +
+
+        // 2. Driver Growth - Line
+        '<div class="analytics-chart-card">' +
+        '<h3>Driver Registration Growth</h3>' +
+        '<p class="analytics-chart-sub">New driver registrations over the last 6 months</p>' +
+        '<div class="analytics-chart-wrap"><canvas id="chartDriverGrowth"></canvas></div>' +
+        '</div>' +
+
+        // 3. User Growth - Line
+        '<div class="analytics-chart-card">' +
+        '<h3>Requester Registration Growth</h3>' +
+        '<p class="analytics-chart-sub">New requester accounts over the last 6 months</p>' +
+        '<div class="analytics-chart-wrap"><canvas id="chartUserGrowth"></canvas></div>' +
+        '</div>' +
+
+        // 4. Requests by Type - Bar
+        '<div class="analytics-chart-card">' +
+        '<h3>Emergency Requests by Type</h3>' +
+        '<p class="analytics-chart-sub">Breakdown of emergency categories</p>' +
+        '<div class="analytics-chart-wrap"><canvas id="chartType"></canvas></div>' +
+        '</div>' +
+
+        // 5. Requests by Status - Horizontal Bar
+        '<div class="analytics-chart-card">' +
+        '<h3>Requests by Status</h3>' +
+        '<p class="analytics-chart-sub">Current distribution of all requests</p>' +
+        '<div class="analytics-chart-wrap"><canvas id="chartStatus"></canvas></div>' +
+        '</div>' +
+
+        // 6. Gauge - Avg Response Time
+        '<div class="analytics-chart-card">' +
+        '<h3>Average Response Time</h3>' +
+        '<p class="analytics-chart-sub">Lower is better (target ≤ 5 min)</p>' +
+        '<div class="analytics-gauge-wrap">' +
+        '<canvas id="chartGauge"></canvas>' +
+        '<div class="analytics-gauge-needle" id="gaugeNeedle">' +
+        '<svg width="14" height="105" viewBox="0 0 14 105"><polygon points="7,0 14,100 0,100" fill="' + gaugeColor + '"/></svg>' +
+        '</div>' +
+        '<div class="analytics-gauge-hub"><div class="analytics-gauge-hub-dot" style="background:' + gaugeColor + '"></div></div>' +
+        '<div class="analytics-gauge-label">' +
+        '<span class="analytics-gauge-value">' + escapeHtml(gaugeDisplay) + '</span>' +
+        '<span class="analytics-gauge-unit">' + escapeHtml(gaugeUnit) + '</span>' +
+        '</div>' +
+        '</div>' +
+        '</div>' +
+
+        '</div>' + // end chart grid
+
+        '</div></div></div>'; 
+
+      const palette = {
+        primary: 'hsl(210, 90%, 55%)',
+        success: 'hsl(145, 65%, 38%)',
+        warning: 'hsl(38, 92%, 50%)',
+        emergency: 'hsl(0, 85%, 55%)',
+        info: 'hsl(210, 90%, 55%)',
+        muted: 'hsl(220, 10%, 45%)',
+        grid: 'hsl(220, 15%, 88%)',
+        gridLight: 'hsl(220, 15%, 93%)',
+      };
+
+      const chartFont = { family: "'Inter', sans-serif" };
+      const gridStyle = { color: palette.gridLight };
+      const tickStyle = { color: palette.muted, font: chartFont };
+
+      new Chart(document.getElementById('chartVerification'), {
+        type: 'doughnut',
+        data: {
+          labels: ['Verified', 'Pending', 'Rejected'],
+          datasets: [{
+            data: [drivers.verified, drivers.pending, drivers.rejected],
+            backgroundColor: [palette.success, palette.warning, palette.emergency],
+            borderWidth: 0,
+            hoverOffset: 6
+          }]
+        },
+        options: {
+          responsive: true,
+          maintainAspectRatio: false,
+          cutout: '68%',
+          plugins: {
+            legend: { position: 'bottom', labels: { color: palette.muted, font: chartFont, padding: 16 } }
+          }
+        }
+      });
+
+      const dg = drivers.growth;
+      new Chart(document.getElementById('chartDriverGrowth'), {
+        type: 'line',
+        data: {
+          labels: dg.labels.length ? dg.labels : ['No data'],
+          datasets: [{
+            label: 'Drivers',
+            data: dg.values.length ? dg.values : [0],
+            borderColor: palette.primary,
+            backgroundColor: 'rgba(59,130,246,0.12)',
+            fill: true,
+            tension: 0.4,
+            pointRadius: 4,
+            pointHoverRadius: 6,
+            borderWidth: 2
+          }]
+        },
+        options: {
+          responsive: true,
+          maintainAspectRatio: false,
+          plugins: { legend: { display: false } },
+          scales: {
+            y: { beginAtZero: true, grid: gridStyle, ticks: tickStyle },
+            x: { grid: { display: false }, ticks: tickStyle }
+          }
+        }
+      });
+
+      const ug = users.growth;
+      new Chart(document.getElementById('chartUserGrowth'), {
+        type: 'line',
+        data: {
+          labels: ug.labels.length ? ug.labels : ['No data'],
+          datasets: [{
+            label: 'Requesters',
+            data: ug.values.length ? ug.values : [0],
+            borderColor: palette.success,
+            backgroundColor: 'rgba(34,197,94,0.12)',
+            fill: true,
+            tension: 0.4,
+            pointRadius: 4,
+            pointHoverRadius: 6,
+            borderWidth: 2
+          }]
+        },
+        options: {
+          responsive: true,
+          maintainAspectRatio: false,
+          plugins: { legend: { display: false } },
+          scales: {
+            y: { beginAtZero: true, grid: gridStyle, ticks: tickStyle },
+            x: { grid: { display: false }, ticks: tickStyle }
+          }
+        }
+      });
+
+      const typeColors = typeLabels.map((_, i) => {
+        const hues = [210, 0, 145, 38, 270, 180];
+        return 'hsl(' + hues[i % hues.length] + ', 70%, 55%)';
+      });
+      new Chart(document.getElementById('chartType'), {
+        type: 'bar',
+        data: {
+          labels: typeLabels.length ? typeLabels : ['No data'],
+          datasets: [{
+            label: 'Requests',
+            data: typeValues.length ? typeValues : [0],
+            backgroundColor: typeColors.length ? typeColors : [palette.primary],
+            borderRadius: 6
+          }]
+        },
+        options: {
+          responsive: true,
+          maintainAspectRatio: false,
+          plugins: { legend: { display: false } },
+          scales: {
+            y: { beginAtZero: true, grid: gridStyle, ticks: tickStyle },
+            x: { grid: { display: false }, ticks: tickStyle }
+          }
+        }
+      });
+
+      const statusColors = statusLabels.map(lbl => {
+        const l = lbl.toLowerCase();
+        if (l.includes('completed')) return palette.success;
+        if (l.includes('pending')) return palette.warning;
+        if (l.includes('cancel') || l.includes('reject')) return palette.emergency;
+        return palette.info;
+      });
+      new Chart(document.getElementById('chartStatus'), {
+        type: 'bar',
+        data: {
+          labels: statusLabels.length ? statusLabels : ['No data'],
+          datasets: [{
+            label: 'Count',
+            data: statusValues.length ? statusValues : [0],
+            backgroundColor: statusColors.length ? statusColors : [palette.success],
+            borderRadius: 6
+          }]
+        },
+        options: {
+          responsive: true,
+          maintainAspectRatio: false,
+          indexAxis: 'y',
+          plugins: { legend: { display: false } },
+          scales: {
+            x: { beginAtZero: true, grid: gridStyle, ticks: tickStyle },
+            y: { grid: { display: false }, ticks: tickStyle }
+          }
+        }
+      });
+
+      new Chart(document.getElementById('chartGauge'), {
+        type: 'doughnut',
+        data: {
+          datasets: [{
+            data: [gaugeUsed, gaugeRemain],
+            backgroundColor: [gaugeColor, 'hsl(220,15%,90%)'],
+            borderWidth: 0,
+            circumference: 240,
+            rotation: 240
+          }]
+        },
+        options: {
+          responsive: true,
+          maintainAspectRatio: false,
+          cutout: '70%',
+          plugins: { legend: { display: false }, tooltip: { enabled: false } }
+        }
+      });
+
+      // Needle animation
+      const needleRotation = -120 + (gaugeUsed / gaugeMax) * 240;
+      setTimeout(() => {
+        const needle = document.getElementById('gaugeNeedle');
+        if (needle) needle.style.transform = 'rotate(' + needleRotation + 'deg)';
+      }, 400);
+
+    })();
+  </script>
+</body>
+
+</html>
